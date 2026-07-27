@@ -1,0 +1,28 @@
+# Node modules
+node_modules/
+**/node_modules/
+
+# Production build outputs
+dist/
+dist-ssr/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Rust/Tauri build artifacts
+ks-vision-backend/src-tauri/target/
+ks-vision-backend/src-tauri/gen/
+ks-vision-backend/src-tauri/*.db
+ks-vision-backend/src-tauri/panic_log.txt
+
+# IDE / System files
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
