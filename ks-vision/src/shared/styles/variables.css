@@ -1,0 +1,15 @@
+:root {
+  --bg-widget: rgba(15, 23, 42, 0.75); /* Slate 900 with transparency */
+  --bg-widget-hover: rgba(15, 23, 42, 0.9);
+  --border-widget: rgba(51, 65, 85, 0.4); /* Slate 700 with transparency */
+  --border-widget-hover: rgba(71, 85, 105, 0.6); /* Slate 600 with transparency */
+  --text-primary: #f8fafc; /* Slate 50 */
+  --text-secondary: #94a3b8; /* Slate 400 */
+  --text-muted: #64748b; /* Slate 500 */
+  
+  --accent-cyan: #06b6d4;
+  --accent-purple: #a855f7;
+  --accent-gradient: linear-gradient(135deg, #06b6d4 0%, #a855f7 100%);
+  
+  --shadow-premium: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+}

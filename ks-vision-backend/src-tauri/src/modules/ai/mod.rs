@@ -1,0 +1,9 @@
+pub mod errors;
+pub mod models;
+pub mod response;
+pub mod health;
+pub mod prompt;
+pub mod client;
+pub mod commands;
+pub mod context;
+pub mod conversation;
