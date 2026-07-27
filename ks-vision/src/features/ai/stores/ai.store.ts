@@ -11,6 +11,7 @@ interface AIState {
   streaming: boolean;
   lastResponse: string;
   conversationHistory: ChatMessage[];
+  sessionHistory: ChatMessage[];
   modelsList: OllamaModel[];
   error: AIError | null;
   activeRequestId: string | null;
@@ -34,6 +35,7 @@ const initialState: AIState = {
   streaming: false,
   lastResponse: '',
   conversationHistory: [],
+  sessionHistory: [],
   modelsList: [],
   error: null,
   activeRequestId: null,
@@ -96,6 +98,12 @@ export const aiSlice = createSlice({
     clearActiveSources: (state) => {
       state.activeSources = [];
     },
+    addSessionMessage: (state, action: PayloadAction<ChatMessage>) => {
+      state.sessionHistory.push(action.payload);
+    },
+    clearSessionHistory: (state) => {
+      state.sessionHistory = [];
+    },
   },
 });
 
@@ -116,6 +124,8 @@ export const {
   setActiveSources,
   addActiveSource,
   clearActiveSources,
+  addSessionMessage,
+  clearSessionHistory,
 } = aiSlice.actions;
 
 export default aiSlice.reducer;

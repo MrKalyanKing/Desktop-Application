@@ -188,7 +188,11 @@ async fn process_utterance(
     }
     
     // 2. Speaker Diarization
-    let speaker_id = speaker_tracker.identify_speaker(samples, 16000);
+    let speaker_id = if source == AudioSource::Microphone {
+        "You".to_string()
+    } else {
+        speaker_tracker.identify_speaker(samples, 16000)
+    };
     state_manager.set_active_speaker(Some(speaker_id.clone()));
     
     // 3. Get history context
@@ -354,7 +358,11 @@ pub async fn stop_audio_capture(
 
     let prev_context = state.state_manager.get_history(3);
     let source_label = if source == AudioSource::Microphone { "Voice" } else { "System" };
-    let speaker_id = state.speaker_tracker.identify_speaker(&samples, 16000);
+    let speaker_id = if source == AudioSource::Microphone {
+        "You".to_string()
+    } else {
+        state.speaker_tracker.identify_speaker(&samples, 16000)
+    };
     
     match state.transcription_service.transcribe(&samples, source_label, &speaker_id, &prev_context).await {
         Ok((text, _)) => {

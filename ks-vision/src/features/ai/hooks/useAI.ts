@@ -12,7 +12,9 @@ import {
   setConversationHistory,
   addActiveSource,
   clearActiveSources,
-  setAutoCopyClipboard
+  setAutoCopyClipboard,
+  addSessionMessage,
+  clearSessionHistory
 } from '../stores/ai.store';
 import { aiService } from '../services/ai.service';
 import { useStreaming } from './useStreaming';
@@ -30,6 +32,7 @@ export const useAI = () => {
   const streaming = useSelector((state: any) => state.ai.streaming);
   const lastResponse = useSelector((state: any) => state.ai.lastResponse);
   const conversationHistory = useSelector((state: any) => state.ai.conversationHistory);
+  const sessionHistory = useSelector((state: any) => state.ai.sessionHistory);
   const models = useSelector((state: any) => state.ai.modelsList);
   const error = useSelector((state: any) => state.ai.error);
   const activeRequestId = useSelector((state: any) => state.ai.activeRequestId);
@@ -75,6 +78,7 @@ export const useAI = () => {
   const clearHistory = async () => {
     await conversationService.clearHistory();
     dispatch(setConversationHistory([]));
+    dispatch(clearSessionHistory());
     dispatch(clearActiveSources());
   };
 
@@ -201,6 +205,9 @@ export const useAI = () => {
       // Save logs to SQLite
       await conversationService.saveMessage('user', prompt, 'chat');
       await conversationService.saveMessage('assistant', responseText, 'chat');
+      
+      dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now() }));
+      dispatch(addSessionMessage({ role: 'assistant', content: responseText, id: Date.now() + 1 }));
 
       // Auto-copy response to clipboard if configured
       if (autoCopyClipboard) {
@@ -278,6 +285,9 @@ export const useAI = () => {
       await conversationService.saveMessage('user', prompt, 'chat');
       await conversationService.saveMessage('assistant', accumulated, 'chat');
 
+      dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now() }));
+      dispatch(addSessionMessage({ role: 'assistant', content: accumulated, id: Date.now() + 1 }));
+
       if (autoCopyClipboard) {
         navigator.clipboard.writeText(accumulated).catch(e => {
           console.warn('Clipboard write failed:', e);
@@ -332,6 +342,7 @@ export const useAI = () => {
     currentModel,
     changeModel,
     conversationHistory,
+    sessionHistory,
     setError: (err: AIError | null) => dispatch(setError(err)),
   };
 };
