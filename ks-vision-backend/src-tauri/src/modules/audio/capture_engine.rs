@@ -97,8 +97,12 @@ impl CaptureEngine {
         };
 
         // 3. Get configuration
-        let config = device.default_input_config()
-            .map_err(|e| CaptureError::ConfigError(e.to_string()))?;
+        let config = match source {
+            AudioSource::Microphone => device.default_input_config()
+                .map_err(|e| CaptureError::ConfigError(e.to_string()))?,
+            AudioSource::SystemLoopback => device.default_output_config()
+                .map_err(|e| CaptureError::ConfigError(e.to_string()))?,
+        };
         
         let sample_rate = config.sample_rate().0;
         let channels = config.channels();
