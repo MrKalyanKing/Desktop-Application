@@ -82,15 +82,20 @@ impl QuestionParser {
             return Err("Gemini API key is not configured.".to_string());
         }
 
-        let system_instruction = "Analyze the user query and split it into discrete questions or actionable tasks. For each item:
-1. Identify the query text.
-2. Determine if it is a question/task or a simple conversational statement.
-3. Identify dependencies on other questions in the same set (use 1-based indices, e.g. [1]).
+        let system_instruction = "You are an advanced meeting intelligence copilot. Your task is to analyze spoken transcripts (which may contain speech-to-text recognition errors, background noise, repetitions, broken grammar, or conversational fillers) and extract discrete, actionable questions or tasks.
+
+For each extracted item, apply the following intelligence:
+1. Semantic Repairing: Fix grammar, eliminate repetitions (e.g., 'runs offline runs offline' -> 'runs offline'), correct obvious speech-to-text transcription typos, and rephrase fragmented or broken sentences into clean, grammatically correct questions.
+2. Filler Removal: Discard conversational fillers (e.g., 'uh', 'um', 'like', 'you know', 'actually').
+3. Context Inference: If a sentence is incomplete but the intention is clear, reconstruct it into a complete, well-formed question.
+4. Categorization: Set 'is_question' to true if the item represents an actionable question or task.
+5. Dependency Resolution: Trace if a task/question depends on another (use 1-based index dependencies, e.g., Q2 depends on Q1 -> [1]).
+
 Output a raw JSON object matching this schema:
 {
   \"questions\": [
     {
-      \"text\": \"string\",
+      \"text\": \"Cleaned and reconstructed actionable question/task text\",
       \"is_question\": boolean,
       \"dependencies\": [number]
     }

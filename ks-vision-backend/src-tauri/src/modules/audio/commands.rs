@@ -240,26 +240,24 @@ async fn process_utterance(
                 "status": "final",
             }));
             
-            // 5. Question extraction (Only for user mic)
-            if source == AudioSource::Microphone {
-                match question_parser.parse_questions(&text).await {
-                    Ok(sub_questions) => {
-                        let was_generating = state_manager.is_ai_generating();
-                        if was_generating {
-                            state_manager.set_interrupted(true);
-                            let _ = app.emit("ai-interrupted", ());
-                        }
-                        
-                        state_manager.enqueue_questions(sub_questions.clone());
-                        
-                        let _ = app.emit("questions-parsed", serde_json::json!({
-                            "questions": sub_questions,
-                        }));
-                        
-                        process_next_question(app, state_manager).await;
+            // 5. Question extraction (For both Microphone and System Audio)
+            match question_parser.parse_questions(&text).await {
+                Ok(sub_questions) => {
+                    let was_generating = state_manager.is_ai_generating();
+                    if was_generating {
+                        state_manager.set_interrupted(true);
+                        let _ = app.emit("ai-interrupted", ());
                     }
-                    Err(e) => eprintln!("Failed to parse questions: {}", e),
+                    
+                    state_manager.enqueue_questions(sub_questions.clone());
+                    
+                    let _ = app.emit("questions-parsed", serde_json::json!({
+                        "questions": sub_questions,
+                    }));
+                    
+                    process_next_question(app, state_manager).await;
                 }
+                Err(e) => eprintln!("Failed to parse questions: {}", e),
             }
         }
         Err(e) => eprintln!("Transcription error: {}", e),
