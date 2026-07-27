@@ -7,3 +7,6 @@ pub mod ocr;
 pub mod settings;
 pub mod database;
 pub mod tray;
+pub mod audio;
+pub mod transcription;
+pub mod cognition;

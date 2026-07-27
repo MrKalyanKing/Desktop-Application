@@ -332,5 +332,6 @@ export const useAI = () => {
     currentModel,
     changeModel,
     conversationHistory,
+    setError: (err: AIError | null) => dispatch(setError(err)),
   };
 };

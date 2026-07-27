@@ -80,7 +80,10 @@ pub struct OllamaClient {
 impl OllamaClient {
     pub fn new(base_url: Option<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
         }
     }
@@ -141,32 +144,58 @@ impl OllamaClient {
 
     pub async fn list_models(&self) -> Result<ModelsListResponse, AiError> {
         // --- GEMINI STATIC MODELS LIST ---
+        // let models = vec![
+        //     ModelInfo {
+        //         name: "gemini-3.5-flash-lite".to_string(),
+        //         model: "gemini-3.5-flash-lite".to_string(),
+        //         size: 0,
+        //         digest: "".to_string(),
+        //     },
+        //     ModelInfo {
+        //         name: "gemini-2.5-flash".to_string(),
+        //         model: "gemini-2.5-flash".to_string(),
+        //         size: 0,
+        //         digest: "".to_string(),
+        //     },
+        //     ModelInfo {
+        //         name: "gemini-2.5-flash-lite".to_string(),
+        //         model: "gemini-2.5-flash-lite".to_string(),
+        //         size: 0,
+        //         digest: "".to_string(),
+        //     },
+        //     ModelInfo {
+        //         name: "gemini-3.1-flash-lite".to_string(),
+        //         model: "gemini-3.1-flash-lite".to_string(),
+        //         size: 0,
+        //         digest: "".to_string(),
+        //     },
+        // ];
         let models = vec![
-            ModelInfo {
-                name: "gemini-3.5-flash-lite".to_string(),
-                model: "gemini-3.5-flash-lite".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-            ModelInfo {
-                name: "gemini-2.0-flash".to_string(),
-                model: "gemini-2.0-flash".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-            ModelInfo {
-                name: "gemini-1.5-flash-8b".to_string(),
-                model: "gemini-1.5-flash-8b".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-            ModelInfo {
-                name: "gemini-1.5-pro".to_string(),
-                model: "gemini-1.5-pro".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-        ];
+    ModelInfo {
+        name: "Gemini 3.5 Flash Lite".to_string(),
+        model: "gemini-3.5-flash-lite".to_string(),
+        size: 0,
+        digest: "".to_string(),
+    },
+    ModelInfo {
+        name: "Gemini 2.5 Flash".to_string(),
+        model: "gemini-2.5-flash".to_string(),
+        size: 0,
+        digest: "".to_string(),
+    },
+    ModelInfo {
+        name: "Gemini 2.5 Flash Lite".to_string(),
+        model: "gemini-2.5-flash-lite".to_string(),
+        size: 0,
+        digest: "".to_string(),
+    },
+    ModelInfo {
+        name: "Gemini 3.1 Flash Lite".to_string(),
+        model: "gemini-3.1-flash-lite".to_string(),
+        size: 0,
+        digest: "".to_string(),
+    },
+];
         
         Ok(ModelsListResponse { models })
 
@@ -194,13 +223,13 @@ impl OllamaClient {
 
     pub async fn generate(
         &self,
-        model: &str,
+        _model: &str,
         prompt: &str,
         system: Option<String>,
         _options: Option<GenerateOptions>,
         cancellation_token: CancellationToken,
     ) -> Result<String, AiError> {
-        // --- GEMINI GENERATE IMPLEMENTATION ---
+        // --- GEMINI GENERATE IMPLEMENTATION WITH FALLBACK ---
         load_env_file();
         let api_key = std::env::var("GEMINI_API_KEY")
             .or_else(|_| std::env::var("VITE_GEMINI_API_KEY"))
@@ -213,11 +242,6 @@ impl OllamaClient {
             });
         }
 
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
-            model, api_key
-        );
-
         let system_instruction = system.map(|sys| GeminiSystemInstructionPayload {
             parts: vec![GeminiPartPayload { text: sys }],
         });
@@ -229,103 +253,88 @@ impl OllamaClient {
             system_instruction,
         };
 
-        let request = self.client.post(&url).json(&payload).send();
+        let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
+        let mut attempts = 0;
 
-        tokio::select! {
-            _ = cancellation_token.cancelled() => {
-                Err(AiError::RequestCancelled)
-            }
-            resp_res = request => {
-                let resp = resp_res.map_err(|e| {
-                    eprintln!("[AI SYSTEM ERROR] Http network request failed: {}", e);
-                    AiError::NetworkError {
-                        message: e.to_string(),
+        loop {
+            let active_model = manager.select_model();
+            println!("[AI SYSTEM] Using: {}", active_model);
+
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
+                active_model, api_key
+            );
+
+            let request = self.client.post(&url).json(&payload).send();
+
+            let resp = tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    return Err(AiError::RequestCancelled);
+                }
+                resp_res = request => {
+                    match resp_res {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("[AI SYSTEM ERROR] Http network request failed: {}", e);
+                            return Err(AiError::NetworkError {
+                                message: e.to_string(),
+                            });
+                        }
                     }
-                })?;
-
-                let status_code = resp.status();
-                if !status_code.is_success() {
-                    let err_text = resp.text().await.unwrap_or_default();
-                    eprintln!("[AI SYSTEM ERROR] Gemini API returned status {}: {}", status_code, err_text);
-                    return Err(AiError::OllamaError {
-                        message: format!("Gemini API returned status {}: {}", status_code, err_text),
-                    });
                 }
+            };
 
-                let gemini_resp = resp.json::<GeminiResponse>().await.map_err(|e| {
-                    eprintln!("[AI SYSTEM ERROR] Failed to parse Gemini response payload: {}", e);
-                    AiError::NetworkError {
-                        message: format!("Failed to parse Gemini response: {}", e),
+            let status_code = resp.status();
+            if !status_code.is_success() {
+                let err_text = resp.text().await.unwrap_or_default();
+                eprintln!("[AI SYSTEM ERROR] Gemini API returned status {}: {}", status_code, err_text);
+                
+                if manager.is_quota_error(status_code, &err_text) {
+                    let delay = manager.parse_retry_delay(&err_text);
+                    manager.blacklist_model(&active_model, &err_text, delay);
+                    
+                    attempts += 1;
+                    if attempts < manager.models_len() {
+                        let next_model = manager.select_model();
+                        println!("[MODEL MANAGER] 429 received -> Switching to: {}", next_model);
+                        continue;
                     }
-                })?;
-
-                let text = gemini_resp.candidates
-                    .and_then(|c| c.first().cloned())
-                    .and_then(|c| c.content)
-                    .and_then(|c| c.parts)
-                    .and_then(|p| p.first().cloned())
-                    .and_then(|p| p.text)
-                    .ok_or_else(|| AiError::EmptyResponse)?;
-
-                Ok(text)
-            }
-        }
-
-        /* 
-        // ==========================================
-        // OLLAMA GENERATE BACKUP
-        // Uncomment the code below to switch back to Ollama in the future
-        // ==========================================
-        let url = format!("{}/api/generate", self.base_url);
-        let payload = GeneratePayload {
-            model: model.to_string(),
-            prompt: prompt.to_string(),
-            system,
-            stream: false,
-            options,
-        };
-
-        let request = self.client.post(&url).json(&payload).send();
-
-        tokio::select! {
-            _ = cancellation_token.cancelled() => {
-                Err(AiError::RequestCancelled)
-            }
-            resp_res = request => {
-                let resp = resp_res.map_err(|e| AiError::NetworkError {
-                    message: e.to_string(),
-                })?;
-
-                if !resp.status().is_success() {
-                    return Err(AiError::OllamaError {
-                        message: format!("Generate returned status: {}", resp.status()),
-                    });
                 }
 
-                let ollama_resp = resp.json::<OllamaResponse>().await.map_err(|e| AiError::NetworkError {
-                    message: format!("Failed to parse generate response: {}", e),
-                })?;
-
-                if ollama_resp.response.is_empty() {
-                    Err(AiError::EmptyResponse)
-                } else {
-                    Ok(ollama_resp.response)
-                }
+                return Err(AiError::OllamaError {
+                    message: format!("Gemini API returned status {}: {}", status_code, err_text),
+                });
             }
+
+            let gemini_resp = resp.json::<GeminiResponse>().await.map_err(|e| {
+                eprintln!("[AI SYSTEM ERROR] Failed to parse Gemini response payload: {}", e);
+                AiError::NetworkError {
+                    message: format!("Failed to parse Gemini response: {}", e),
+                }
+            })?;
+
+            let text = gemini_resp.candidates
+                .and_then(|c| c.first().cloned())
+                .and_then(|c| c.content)
+                .and_then(|c| c.parts)
+                .and_then(|p| p.first().cloned())
+                .and_then(|p| p.text)
+                .ok_or_else(|| AiError::EmptyResponse)?;
+
+            return Ok(text);
         }
-        */
     }
 
     pub async fn generate_stream(
         &self,
-        model: &str,
+        _model: &str,
         prompt: &str,
         system: Option<String>,
         _options: Option<GenerateOptions>,
         channel: Channel<String>,
         cancellation_token: CancellationToken,
     ) -> Result<(), AiError> {
-        // --- GEMINI STREAM IMPLEMENTATION ---
+        // --- GEMINI STREAM IMPLEMENTATION WITH FALLBACK ---
         load_env_file();
         let api_key = std::env::var("GEMINI_API_KEY")
             .or_else(|_| std::env::var("VITE_GEMINI_API_KEY"))
@@ -338,11 +347,6 @@ impl OllamaClient {
             });
         }
 
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1/models/{}:streamGenerateContent?key={}",
-            model, api_key
-        );
-
         let system_instruction = system.map(|sys| GeminiSystemInstructionPayload {
             parts: vec![GeminiPartPayload { text: sys }],
         });
@@ -354,22 +358,53 @@ impl OllamaClient {
             system_instruction,
         };
 
-        let response_res = self.client.post(&url).json(&payload).send().await;
-        let response = response_res.map_err(|e| {
-            eprintln!("[AI SYSTEM STREAM ERROR] Http network stream request failed: {}", e);
-            AiError::NetworkError {
-                message: e.to_string(),
-            }
-        })?;
+        let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
+        let mut attempts = 0;
 
-        if !response.status().is_success() {
-            let status_code = response.status();
-            let err_text = response.text().await.unwrap_or_default();
-            eprintln!("[AI SYSTEM STREAM ERROR] Gemini stream returned status {}: {}", status_code, err_text);
-            return Err(AiError::OllamaError {
-                message: format!("Gemini stream returned error: {}", err_text),
-            });
-        }
+        let response = loop {
+            let active_model = manager.select_model();
+            println!("[AI SYSTEM STREAM] Using: {}", active_model);
+
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1/models/{}:streamGenerateContent?key={}",
+                active_model, api_key
+            );
+
+            let response_res = self.client.post(&url).json(&payload).send().await;
+            let resp = match response_res {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[AI SYSTEM STREAM ERROR] Http network stream request failed: {}", e);
+                    return Err(AiError::NetworkError {
+                        message: e.to_string(),
+                    });
+                }
+            };
+
+            let status_code = resp.status();
+            if !status_code.is_success() {
+                let err_text = resp.text().await.unwrap_or_default();
+                eprintln!("[AI SYSTEM STREAM ERROR] Gemini stream returned status {}: {}", status_code, err_text);
+                
+                if manager.is_quota_error(status_code, &err_text) {
+                    let delay = manager.parse_retry_delay(&err_text);
+                    manager.blacklist_model(&active_model, &err_text, delay);
+                    
+                    attempts += 1;
+                    if attempts < manager.models_len() {
+                        let next_model = manager.select_model();
+                        println!("[MODEL MANAGER] 429 received -> Switching to: {}", next_model);
+                        continue;
+                    }
+                }
+
+                return Err(AiError::OllamaError {
+                    message: format!("Gemini stream returned error: {}", err_text),
+                });
+            }
+
+            break resp;
+        };
 
         let mut stream = response.bytes_stream();
 

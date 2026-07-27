@@ -7,3 +7,4 @@ pub mod client;
 pub mod commands;
 pub mod context;
 pub mod conversation;
+pub mod model_manager;

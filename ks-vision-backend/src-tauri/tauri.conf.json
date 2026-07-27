@@ -5,7 +5,7 @@
   "identifier": "com.tauri.dev",
   "build": {
     "frontendDist": "../../ks-vision/dist",
-    "devUrl": "http://localhost:5176",
+    "devUrl": "http://localhost:5173",
     "beforeDevCommand": "cd ../ks-vision && npm run dev",
     "beforeBuildCommand": "cd ../ks-vision && npm run build"
   },

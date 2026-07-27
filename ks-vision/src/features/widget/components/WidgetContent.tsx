@@ -7,6 +7,8 @@ import { CapturePreview, useScreenshot } from '../../screenshot';
 import { useSystemTray } from '../../tray';
 import { SettingsPanel } from '../../settings';
 import { useVoiceAgent } from '../hooks/useVoiceAgent';
+import { ModeToggle } from './ModeToggle';
+import { AudioIntelligenceUI } from './AudioIntelligenceUI';
 
 export const WidgetContent: React.FC = () => {
   const position = useWidgetPosition();
@@ -36,7 +38,7 @@ export const WidgetContent: React.FC = () => {
     conversationHistory
   } = useAI();
 
-  const { isRecording, transcript, toggleVoice } = useVoiceAgent();
+  const { isRecording, isTranscribing, transcript, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
 
   const {
     step: screenshotStep,
@@ -70,7 +72,7 @@ export const WidgetContent: React.FC = () => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [response, conversationHistory, loading, error, screenshotStep, screenshotError, isRecording]);
+  }, [response, conversationHistory, loading, error, screenshotStep, screenshotError, isRecording, isTranscribing]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -219,22 +221,13 @@ export const WidgetContent: React.FC = () => {
             </div>
           )}
 
-          {/* Audio Recording overlay */}
-          {isRecording && (
-            <div className="flex flex-col items-center justify-center p-2.5 bg-cyan-950/20 border border-cyan-800/20 rounded-lg animate-pulse select-none mb-1.5">
-              <span className="text-[9px] font-bold text-cyan-400 mb-1">🎤 LISTENING (Press Ctrl+Shift+V or mic icon to stop)</span>
-              <div className="flex gap-1 items-center h-4 mb-1">
-                <div className="w-1 bg-cyan-400 h-2 animate-bounce" style={{ animationDelay: '0.1s' }} />
-                <div className="w-1 bg-cyan-400 h-4 animate-bounce" style={{ animationDelay: '0.2s' }} />
-                <div className="w-1 bg-cyan-400 h-3 animate-bounce" style={{ animationDelay: '0.3s' }} />
-                <div className="w-1 bg-cyan-400 h-1 animate-bounce" style={{ animationDelay: '0.4s' }} />
-              </div>
-              {transcript && (
-                <div className="text-[9px] text-slate-300 text-center font-mono max-h-12 overflow-y-auto px-1 italic">
-                  "{transcript}"
-                </div>
-              )}
-            </div>
+          {/* Audio Intelligence UI Dashboard */}
+          {(isRecording || isTranscribing) && (
+            <AudioIntelligenceUI
+              isRecording={isRecording}
+              isTranscribing={isTranscribing}
+              captureMode={captureMode}
+            />
           )}
 
           <div 
@@ -342,6 +335,11 @@ export const WidgetContent: React.FC = () => {
             )}
           </div>
         </div>
+      </div>
+
+      {/* Audio Capture Mode Toggle */}
+      <div className="mb-1">
+        <ModeToggle mode={captureMode} onChange={setCaptureMode} disabled={isRecording || isTranscribing} />
       </div>
 
       {/* Bottom row: Interactive prompt input and control triggers */}

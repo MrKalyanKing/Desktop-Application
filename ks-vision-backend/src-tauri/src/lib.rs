@@ -4,6 +4,20 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  std::panic::set_hook(Box::new(|info| {
+      let backtrace = std::backtrace::Backtrace::capture();
+      let panic_msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+          *s
+      } else if let Some(s) = info.payload().downcast_ref::<String>() {
+          s.as_str()
+      } else {
+          "unknown panic"
+      };
+      let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown location".to_string());
+      let log_content = format!("Panic occurred: {}\nLocation: {}\nBacktrace:\n{:?}", panic_msg, location, backtrace);
+      let _ = std::fs::write("panic_log.txt", log_content);
+  }));
+
   tauri::Builder::default()
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
     .setup(|app| {
@@ -37,6 +51,7 @@ pub fn run() {
       Ok(())
     })
     .manage(modules::ai::commands::AiState::new())
+    .manage(modules::audio::commands::AudioState::new())
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::Moved(position) = event {
         let app_handle = window.app_handle();
@@ -71,7 +86,13 @@ pub fn run() {
       modules::settings::commands::set_startup_enabled_cmd,
       modules::settings::commands::is_startup_enabled_cmd,
       modules::window::stealth::set_stealth_mode,
-      modules::window::stealth::verify_stealth
+      modules::window::stealth::verify_stealth,
+      modules::audio::commands::start_audio_capture,
+      modules::audio::commands::stop_audio_capture,
+      modules::audio::commands::get_audio_capture_state,
+      modules::audio::commands::register_ai_audio_output,
+      modules::audio::commands::set_ai_generating_state,
+      modules::audio::commands::pop_next_pending_question
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

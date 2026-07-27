@@ -20,7 +20,7 @@ interface AIState {
 
 const getInitialModel = (): string => {
   const model = storage.get(STORAGE_KEYS.ACTIVE_MODEL, DEFAULT_MODEL) as string;
-  if (model === 'qwen2.5-coder:7b' || model === 'gemini-3.5-flash-lite' || model === 'gemini-1.5-flash' || model === 'gemini-2.0-flash' || model === 'gemini-1.5-flash-8b') {
+  if (model === 'qwen2.5-coder:7b' || model === 'gemini-3.5-flash-lite') {
     storage.set(STORAGE_KEYS.ACTIVE_MODEL, 'gemini-3.5-flash-lite');
     return 'gemini-3.5-flash-lite';
   }

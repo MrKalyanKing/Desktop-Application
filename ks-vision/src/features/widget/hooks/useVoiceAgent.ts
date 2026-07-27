@@ -1,15 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { useAI } from '../../ai';
 
 export const useVoiceAgent = () => {
   const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const { stream } = useAI();
+  const [captureMode, setCaptureMode] = useState<'mic' | 'system'>('mic');
+  const { stream, cancel, setError } = useAI();
+  const cancelRef = useRef(cancel);
+  useEffect(() => {
+    cancelRef.current = cancel;
+  }, [cancel]);
   
   const transcriptRef = useRef('');
   const isRecordingRef = useRef(false);
-  const silenceTimerRef = useRef<any>(null);
+  const captureModeRef = useRef<'mic' | 'system'>('mic');
   const lastTriggerRef = useRef<number>(0);
   const streamRef = useRef(stream);
 
@@ -25,195 +32,151 @@ export const useVoiceAgent = () => {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
 
-  const recognitionRef = useRef<any>(null);
-  const simIntervalRef = useRef<any>(null);
-  const isSimulatingRef = useRef(false);
-
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    captureModeRef.current = captureMode;
+  }, [captureMode]);
 
-    if (SpeechRecognition) {
-      const rec = new SpeechRecognition();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = 'en-US';
-
-      rec.onresult = (event: any) => {
-        let interimStr = '';
-        let finalStr = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalStr += event.results[i][0].transcript + ' ';
-          } else {
-            interimStr += event.results[i][0].transcript;
-          }
+  // Sync state with backend on mount
+  useEffect(() => {
+    invoke<{ is_recording: boolean; mode: string }>('get_audio_capture_state')
+      .then((state) => {
+        setIsRecording(state.is_recording);
+        if (state.mode === 'system' || state.mode === 'mic') {
+          setCaptureMode(state.mode as 'mic' | 'system');
         }
+      })
+      .catch((err) => console.warn('Failed to get backend audio capture state:', err));
+  }, []);
 
-        if (finalStr || interimStr) {
-          setTranscript(prev => {
-            const next = prev + finalStr;
-            transcriptRef.current = next;
-            return next;
-          });
+  const triggerAISubmission = async (text: string) => {
+    const final = text.trim();
+    if (!final) return;
 
-          if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current);
-          }
-          
-          silenceTimerRef.current = setTimeout(() => {
-            if (isRecordingRef.current) {
-              console.log('Silence threshold reached, sending chunk to AI...');
-              if (interimStr) {
-                transcriptRef.current += interimStr + ' ';
-              }
-              if (recognitionRef.current) {
-                try {
-                  // Stop to finalize this utterance; it will auto-restart in onend
-                  recognitionRef.current.stop();
-                } catch {}
-              } else {
-                triggerAISubmission();
-              }
-            }
+    // Clear the transcript buffer
+    setTranscript('');
+    transcriptRef.current = '';
+
+    // Direct response instructions
+    const system = 'You are an AI Meeting Copilot. Provide a direct, concise response to the user query. Keep your answer under 80 words. If the user corrects your previous statement, acknowledge it, learn from the history, and correct your response.';
+    try {
+      await invoke('set_ai_generating_state', { generating: true });
+      await streamRef.current(final, { voiceText: final }, system);
+    } catch (err) {
+      console.error('Failed to stream AI response:', err);
+    } finally {
+      await invoke('set_ai_generating_state', { generating: false });
+      
+      // Check for next queued question
+      try {
+        const nextPrompt = await invoke<string | null>('pop_next_pending_question');
+        if (nextPrompt) {
+          setTimeout(() => {
+            triggerAISubmission(nextPrompt);
           }, 1500);
         }
-      };
-
-      rec.onerror = (e: any) => {
-        console.warn('Speech recognition status update:', e.error);
-        if (e.error === 'no-speech' || e.error === 'aborted') {
-          return;
-        }
-        
-        if (isRecordingRef.current && !isSimulatingRef.current) {
-          isSimulatingRef.current = true;
-          try {
-            rec.abort();
-          } catch {}
-          simulateSpeech();
-        }
-      };
-
-      rec.onend = () => {
-        // Automatically submit the transcript
-        if (isRecordingRef.current && !isSimulatingRef.current) {
-          if (transcriptRef.current.trim().length > 0) {
-            triggerAISubmission(false);
-          }
-          
-          // Re-trigger speech recognition with a 100ms delay to allow system handles to clear
-          setTimeout(() => {
-            if (isRecordingRef.current && !isSimulatingRef.current) {
-              try {
-                rec.start();
-              } catch (e) {
-                console.warn('Failed to restart speech recognition:', e);
-              }
-            }
-          }, 100);
-        }
-      };
-
-      recognitionRef.current = rec;
-    }
-
-    const triggerAISubmission = (isExplicitStop: boolean = false) => {
-      if (isExplicitStop) {
-        setIsRecording(false);
-        isRecordingRef.current = false;
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-        }
+      } catch (err) {
+        console.error('Failed to pop next pending question:', err);
       }
+    }
+  };
 
-      const final = transcriptRef.current.trim();
-      if (!final) return;
+  const toggleVoice = async () => {
+    const now = Date.now();
+    if (now - lastTriggerRef.current < 400) {
+      console.warn('Voice toggle debounced');
+      return;
+    }
+    lastTriggerRef.current = now;
 
-      // Clear the transcript buffer for the next sentence
+    if (!isRecordingRef.current) {
+      // Start recording
       setTranscript('');
       transcriptRef.current = '';
-
-      // Direct response instructions with correction following rules
-      const system = 'You are an AI Meeting Copilot. Provide a direct, concise response to the user query. Keep your answer under 80 words. If the user corrects your previous statement, acknowledge it, learn from the history, and correct your response.';
-      streamRef.current(final, { voiceText: final }, system);
-    };
-
-    const simulateSpeech = () => {
-      const phrases = [
-        "Let's review the actions for the sprint.",
-        "We need to package the next production installer.",
-        "Can you verify that SQLite runs offline.",
-        "All tests have successfully verified."
-      ];
-      let index = 0;
-      setTranscript(phrases[0] + ' ');
-      transcriptRef.current = phrases[0] + ' ';
-
-      simIntervalRef.current = setInterval(() => {
-        index++;
-        if (index < phrases.length) {
-          setTranscript(prev => {
-            const next = prev + phrases[index] + ' ';
-            transcriptRef.current = next;
-            return next;
-          });
-        } else {
-          clearInterval(simIntervalRef.current);
-          silenceTimerRef.current = setTimeout(() => {
-            triggerAISubmission(true);
-          }, 1500);
-        }
-      }, 2500);
-    };
-
-    const toggleVoice = async () => {
-      const now = Date.now();
-      if (now - lastTriggerRef.current < 400) {
-        console.warn('Voice toggle debounced');
-        return;
-      }
-      lastTriggerRef.current = now;
-
-      if (!isRecordingRef.current) {
-        setTranscript('');
-        transcriptRef.current = '';
+      
+      try {
+        await invoke('start_audio_capture', { mode: captureModeRef.current });
         setIsRecording(true);
-        isRecordingRef.current = true;
-        isSimulatingRef.current = false;
-
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          stream.getTracks().forEach(track => track.stop());
-          
-          if (recognitionRef.current) {
-            try {
-              recognitionRef.current.start();
-            } catch (e) {
-              console.warn('Failed to start speech recognition, starting simulation:', e);
-              isSimulatingRef.current = true;
-              simulateSpeech();
-            }
-          } else {
-            isSimulatingRef.current = true;
-            simulateSpeech();
-          }
-        } catch (err) {
-          console.warn('Microphone access blocked, falling back to simulation:', err);
-          isSimulatingRef.current = true;
-          simulateSpeech();
-        }
-      } else {
-        if (recognitionRef.current) {
-          try {
-            recognitionRef.current.stop();
-          } catch {}
-        }
-        if (simIntervalRef.current) {
-          clearInterval(simIntervalRef.current);
-        }
-        triggerAISubmission(true);
+      } catch (err: any) {
+        console.error('Failed to start audio capture:', err);
+        // Fallback to simulation if capture fails (like if CPAL has no device)
+        simulateSpeech();
       }
-    };
+    } else {
+      // Stop recording and transcribe
+      setIsRecording(false);
+      setIsTranscribing(true);
+
+      try {
+        const text = await invoke<string>('stop_audio_capture');
+        setIsTranscribing(false);
+        if (text && text.trim().length > 0) {
+          setTranscript(text);
+          await triggerAISubmission(text);
+        }
+      } catch (err: any) {
+        setIsTranscribing(false);
+        console.error('Failed to stop/transcribe audio:', err);
+        setError({
+          type: 'GENERAL_ERROR',
+          message: typeof err === 'string' ? err : (err.message || JSON.stringify(err))
+        });
+      }
+    }
+  };
+
+  const simulateSpeech = () => {
+    setIsRecording(true);
+    const phrases = [
+      "Let's review the actions for the sprint.",
+      "We need to package the next production installer.",
+      "Can you verify that SQLite runs offline.",
+      "All tests have successfully verified."
+    ];
+    let index = 0;
+    setTranscript(phrases[0] + ' ');
+    transcriptRef.current = phrases[0] + ' ';
+
+    const simInterval = setInterval(() => {
+      index++;
+      if (index < phrases.length) {
+        setTranscript(prev => {
+          const next = prev + phrases[index] + ' ';
+          transcriptRef.current = next;
+          return next;
+        });
+      } else {
+        clearInterval(simInterval);
+        setIsRecording(false);
+        const final = transcriptRef.current;
+        triggerAISubmission(final);
+      }
+    }, 2500);
+  };
+
+  useEffect(() => {
+    const unlisteners: Promise<() => void>[] = [];
+
+    unlisteners.push(listen<{ text: string; speaker: string; source: string; status: string }>(
+      'audio-transcription',
+      (event) => {
+        setTranscript(event.payload.text);
+        transcriptRef.current = event.payload.text;
+      }
+    ));
+
+    unlisteners.push(listen<{ prompt: string }>('trigger-ai-response', (event) => {
+      const payload = event.payload as any;
+      const prompt = typeof payload === 'string' ? payload : payload.prompt;
+      if (prompt) {
+        triggerAISubmission(prompt);
+      }
+    }));
+
+    unlisteners.push(listen('ai-interrupted', () => {
+      if (cancelRef.current) {
+        cancelRef.current();
+      }
+    }));
 
     const unlistenPromise = listen('toggle-voice', () => {
       console.log('toggle-voice event received');
@@ -224,13 +187,7 @@ export const useVoiceAgent = () => {
 
     return () => {
       unlistenPromise.then(unlisten => unlisten());
-      if (simIntervalRef.current) clearInterval(simIntervalRef.current);
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort();
-        } catch {}
-      }
+      unlisteners.forEach(promise => promise.then(unsub => unsub()));
     };
   }, []);
 
@@ -240,5 +197,12 @@ export const useVoiceAgent = () => {
     }
   };
 
-  return { isRecording, transcript, setIsRecording, toggleVoice: toggleVoiceDirect };
+  return { 
+    isRecording, 
+    isTranscribing,
+    transcript, 
+    captureMode, 
+    setCaptureMode, 
+    toggleVoice: toggleVoiceDirect 
+  };
 };
