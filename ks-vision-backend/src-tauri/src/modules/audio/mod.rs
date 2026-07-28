@@ -6,4 +6,5 @@ pub mod vad_engine;
 pub mod speaker_tracker;
 pub mod segmentation_engine;
 pub mod capture_engine;
+pub mod preprocess;
 pub mod commands;

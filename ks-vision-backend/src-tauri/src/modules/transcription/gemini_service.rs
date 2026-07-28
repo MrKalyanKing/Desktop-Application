@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use base64::Engine;
-use crate::modules::audio::commands::CaptureStateResponse;
+use crate::modules::audio::preprocess;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TranscriptChunk {
@@ -37,7 +37,6 @@ impl GeminiTranscriptionService {
     }
 
     pub fn load_api_key(&self) -> String {
-        // Try environment first
         if let Ok(key) = std::env::var("GEMINI_API_KEY") {
             if !key.is_empty() && key != "YOUR_GEMINI_API_KEY_HERE" {
                 return key;
@@ -48,7 +47,7 @@ impl GeminiTranscriptionService {
                 return key;
             }
         }
-        
+
         let paths = vec![".env", "../.env", "src-tauri/.env", "../src-tauri/.env"];
         for path in paths {
             if let Ok(content) = std::fs::read_to_string(path) {
@@ -85,36 +84,73 @@ impl GeminiTranscriptionService {
             return Err("Gemini API key is not configured. Please add GEMINI_API_KEY to your .env file.".to_string());
         }
 
-        let wav_bytes = write_wav_to_bytes(samples, 16000);
+        // Noise gate + trim + normalize BEFORE upload (Whisper-like hygiene without local Whisper)
+        let prepared = preprocess::prepare_for_stt(samples);
+        if prepared.len() < 1600 {
+            // < ~100ms of speech after trim — skip
+            return Ok((String::new(), 0.0));
+        }
+
+        // Cap upload size (~20s @ 16k) to protect latency/quota
+        let max_samples = 20 * 16000;
+        let prepared = if prepared.len() > max_samples {
+            prepared[prepared.len() - max_samples..].to_vec()
+        } else {
+            prepared
+        };
+
+        let wav_bytes = write_wav_to_bytes(&prepared, 16000);
         let b64_data = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
 
-        // Format previous context
         let mut context_prompt = String::from("Previous conversation context (last 3 utterances):\n");
         if previous_context.is_empty() {
             context_prompt.push_str("None\n");
         } else {
             for chunk in previous_context.iter().take(3) {
-                context_prompt.push_str(&format!("[{} (Speaker: {})]: {}\n", source_label, chunk.speaker, chunk.text));
+                context_prompt.push_str(&format!(
+                    "[{} (Speaker: {})]: {}\n",
+                    source_label, chunk.speaker, chunk.text
+                ));
             }
         }
 
-        let system_instruction = "You are an expert speech-to-text system. Transcribe the following audio with these rules:
-1. PUNCTUATION: Add proper punctuation, commas, and sentence breaks based on natural pauses.
-2. RESTARTS: If the speaker starts a sentence, pauses, and restarts ('I mean...', 'Actually...'), transcribe ONLY the final corrected version. Do not include false starts.
-3. FILLERS: Remove verbal fillers ('um', 'uh', 'like', 'you know') unless they carry semantic meaning.
-4. QUESTIONS: Ensure questions end with '?'.
-5. NAMES/TERMS: Preserve technical terms, acronyms, and proper nouns exactly as spoken.
-6. UNCERTAIN: If a word is unclear, mark it with [unclear: 'sounds-like'].
-7. SPEAKER STYLE: The speaker may pause to think. Do not break their thought into separate sentences if the pauses are natural thinking pauses.
-8. CONTEXT: Previous conversation context is provided. Use it to disambiguate homophones and predict likely words.";
+        let is_system = source_label.eq_ignore_ascii_case("System");
+        let system_instruction = if is_system {
+            "You are a production-grade speech-to-text engine for remote meeting / video call audio \
+(Google Meet, Microsoft Teams, Zoom, YouTube, browser speakers). The audio is often compressed, \
+echoey, or mixed with light background noise. Your job is maximum word accuracy.
+
+RULES:
+1. Transcribe EVERY intelligible word, including short answers (yes/no/ok), numbers, names, \
+acronyms, and technical terms exactly as spoken.
+2. Prefer the most likely word given conversational context; use previous utterances to resolve \
+homophones and clipped syllables.
+3. If a word is partly masked by noise but recoverable, write the best guess WITHOUT brackets.
+4. Only use [unclear: 'approx'] when a word is truly unintelligible.
+5. Remove fillers (um/uh) and false starts; keep meaningful content.
+6. Add punctuation and '?' on questions.
+7. Ignore non-speech (music beds, UI beeps, hold music) — if no human speech, output exactly: (silence)
+8. Output ONLY the transcript text — no preamble, labels, or commentary."
+        } else {
+            "You are a production-grade speech-to-text engine for close-talk microphone audio.
+
+RULES:
+1. Transcribe accurately with punctuation; preserve names, numbers, acronyms, technical terms.
+2. Drop false starts and fillers (um/uh) unless meaningful.
+3. Use context for homophones; mark truly unintelligible words as [unclear: 'approx'].
+4. If no speech, output exactly: (silence)
+5. Output ONLY the transcript text."
+        };
 
         let user_prompt = format!(
-            "{}\nTranscribe this audio. The speaker ({}) is currently in 'thinking/speaking' mode with natural pauses. Output ONLY the transcription text, no preamble or summary.",
-            context_prompt, speaker_id
+            "{}\nSource: {} | Speaker: {}\n\
+Transcribe this audio carefully. Capture minute details of what was spoken. \
+Output ONLY the transcription text.",
+            context_prompt, source_label, speaker_id
         );
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(45))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -132,7 +168,11 @@ impl GeminiTranscriptionService {
                         }
                     }
                 ]
-            }]
+            }],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 2048
+            }
         });
 
         let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
@@ -140,10 +180,10 @@ impl GeminiTranscriptionService {
 
         loop {
             let active_model = manager.select_model();
-            println!("[TRANSCRIBE] Using: {}", active_model);
+            println!("[TRANSCRIBE] Using: {} ({} samples)", active_model, prepared.len());
 
             let url = format!(
-                "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
                 active_model, api_key
             );
 
@@ -155,12 +195,15 @@ impl GeminiTranscriptionService {
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
-                eprintln!("[TRANSCRIBE ERROR] Gemini API returned status {}: {}", status_code, err_text);
-                
+                eprintln!(
+                    "[TRANSCRIBE ERROR] Gemini API returned status {}: {}",
+                    status_code, err_text
+                );
+
                 if manager.is_quota_error(status_code, &err_text) {
                     let delay = manager.parse_retry_delay(&err_text);
                     manager.blacklist_model(&active_model, &err_text, delay);
-                    
+
                     attempts += 1;
                     if attempts < manager.models_len() {
                         let next_model = manager.select_model();
@@ -169,14 +212,19 @@ impl GeminiTranscriptionService {
                     }
                 }
 
-                return Err(format!("Gemini API returned error status {}: {}", status_code, err_text));
+                return Err(format!(
+                    "Gemini API returned error status {}: {}",
+                    status_code, err_text
+                ));
             }
 
-            let gemini_resp: GeminiResponse = resp.json()
+            let gemini_resp: GeminiResponse = resp
+                .json()
                 .await
                 .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
 
-            let text = gemini_resp.candidates
+            let mut text = gemini_resp
+                .candidates
                 .and_then(|c| c.into_iter().next())
                 .and_then(|c| c.content)
                 .and_then(|c| c.parts)
@@ -186,7 +234,25 @@ impl GeminiTranscriptionService {
                 .trim()
                 .to_string();
 
-            let duration_sec = samples.len() as f32 / 16000.0;
+            // Normalize empty / silence markers
+            let lower = text.to_lowercase();
+            if lower.is_empty()
+                || lower == "(silence)"
+                || lower == "silence"
+                || lower == "[silence]"
+                || lower == "..."
+            {
+                return Ok((String::new(), 0.0));
+            }
+
+            // Strip accidental model preambles
+            for prefix in ["Transcript:", "Transcription:", "Output:"] {
+                if let Some(rest) = text.strip_prefix(prefix) {
+                    text = rest.trim().to_string();
+                }
+            }
+
+            let duration_sec = prepared.len() as f32 / 16000.0;
             let confidence = calculate_confidence(&text, duration_sec);
 
             return Ok((text, confidence));
@@ -196,37 +262,34 @@ impl GeminiTranscriptionService {
 
 pub fn write_wav_to_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     let mut spec = Vec::new();
-    
-    // RIFF header
+
     spec.extend_from_slice(b"RIFF");
     let num_samples = samples.len();
-    let data_size = num_samples * 2; // 16-bit PCM = 2 bytes per sample
+    let data_size = num_samples * 2;
     let file_size = 36 + data_size;
     spec.extend_from_slice(&(file_size as u32).to_le_bytes());
     spec.extend_from_slice(b"WAVE");
-    
-    // fmt chunk
+
     spec.extend_from_slice(b"fmt ");
-    spec.extend_from_slice(&(16u32).to_le_bytes()); // subchunk size
-    spec.extend_from_slice(&(1u16).to_le_bytes());   // audio format: 1 (PCM)
-    spec.extend_from_slice(&(1u16).to_le_bytes());   // channels: 1 (mono)
+    spec.extend_from_slice(&(16u32).to_le_bytes());
+    spec.extend_from_slice(&(1u16).to_le_bytes());
+    spec.extend_from_slice(&(1u16).to_le_bytes());
     spec.extend_from_slice(&sample_rate.to_le_bytes());
     let byte_rate: u32 = sample_rate * 1 * 2;
     spec.extend_from_slice(&byte_rate.to_le_bytes());
     let block_align: u16 = 1 * 2;
     spec.extend_from_slice(&block_align.to_le_bytes());
-    spec.extend_from_slice(&(16u16).to_le_bytes()); // bits per sample: 16
-    
-    // data chunk
+    spec.extend_from_slice(&(16u16).to_le_bytes());
+
     spec.extend_from_slice(b"data");
     spec.extend_from_slice(&(data_size as u32).to_le_bytes());
-    
+
     for &sample in samples {
         let clamped = sample.clamp(-1.0, 1.0);
         let scaled = (clamped * 32767.0) as i16;
         spec.extend_from_slice(&scaled.to_le_bytes());
     }
-    
+
     spec
 }
 
@@ -239,20 +302,26 @@ pub fn calculate_confidence(text: &str, audio_duration_sec: f32) -> f32 {
     if total_words == 0 {
         return 0.0;
     }
-    
+
     let mut unclear_count = 0;
     for word in &words {
         if word.contains("[unclear") {
             unclear_count += 1;
         }
     }
-    
+
     let unclear_ratio = unclear_count as f32 / total_words as f32;
     let mut confidence = 1.0 - unclear_ratio;
-    
+
+    // Sparse words for long audio → likely incomplete STT
+    let expected_min_words = (audio_duration_sec * 1.2) as usize; // ~72 wpm floor
+    if total_words + 2 < expected_min_words && audio_duration_sec > 4.0 {
+        confidence -= 0.25;
+    }
+
     if total_words < 3 && audio_duration_sec > 3.0 {
         confidence -= 0.3;
     }
-    
+
     confidence.clamp(0.0, 1.0)
 }

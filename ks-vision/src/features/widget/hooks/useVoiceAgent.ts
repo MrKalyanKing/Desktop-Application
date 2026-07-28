@@ -3,22 +3,34 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAI } from '../../ai';
 
+export type CaptureMode = 'mic' | 'system' | 'both';
+
+/**
+ * Continuous listening with selectable source:
+ * - both  → mic + system (default)
+ * - mic   → your voice only
+ * - system → Meet/Teams/YouTube only
+ *
+ * Mic button pauses/resumes; mode toggle switches source without needing a restart click.
+ */
 export const useVoiceAgent = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [captureMode, setCaptureMode] = useState<'mic' | 'system'>('mic');
+  const [captureMode, setCaptureModeState] = useState<CaptureMode>('both');
   const { stream, cancel, setError } = useAI();
   const cancelRef = useRef(cancel);
   useEffect(() => {
     cancelRef.current = cancel;
   }, [cancel]);
-  
+
   const transcriptRef = useRef('');
   const isRecordingRef = useRef(false);
-  const captureModeRef = useRef<'mic' | 'system'>('mic');
+  const captureModeRef = useRef<CaptureMode>('both');
   const lastTriggerRef = useRef<number>(0);
   const streamRef = useRef(stream);
+  const startedRef = useRef(false);
+  const switchingRef = useRef(false);
 
   useEffect(() => {
     streamRef.current = stream;
@@ -36,28 +48,15 @@ export const useVoiceAgent = () => {
     captureModeRef.current = captureMode;
   }, [captureMode]);
 
-  // Sync state with backend on mount
-  useEffect(() => {
-    invoke<{ is_recording: boolean; mode: string }>('get_audio_capture_state')
-      .then((state) => {
-        setIsRecording(state.is_recording);
-        if (state.mode === 'system' || state.mode === 'mic') {
-          setCaptureMode(state.mode as 'mic' | 'system');
-        }
-      })
-      .catch((err) => console.warn('Failed to get backend audio capture state:', err));
-  }, []);
-
   const triggerAISubmission = async (text: string) => {
     const final = text.trim();
     if (!final) return;
 
-    // Clear the transcript buffer
     setTranscript('');
     transcriptRef.current = '';
 
-    // Direct response instructions
-    const system = 'You are an AI Meeting Copilot. Provide a direct, concise response to the user query. Keep your answer under 80 words. If the user corrects your previous statement, acknowledge it, learn from the history, and correct your response.';
+    const system =
+      'You are an AI Meeting Copilot. Provide a direct, concise response to the user query. Keep your answer under 80 words. If the user corrects your previous statement, acknowledge it, learn from the history, and correct your response.';
     try {
       await invoke('set_ai_generating_state', { generating: true });
       await streamRef.current(final, { voiceText: final }, system);
@@ -65,8 +64,7 @@ export const useVoiceAgent = () => {
       console.error('Failed to stream AI response:', err);
     } finally {
       await invoke('set_ai_generating_state', { generating: false });
-      
-      // Check for next queued question
+
       try {
         const nextPrompt = await invoke<string | null>('pop_next_pending_question');
         if (nextPrompt) {
@@ -80,115 +78,162 @@ export const useVoiceAgent = () => {
     }
   };
 
+  const startListening = async (mode: CaptureMode = captureModeRef.current) => {
+    try {
+      await invoke('start_audio_capture', { mode });
+      setCaptureModeState(mode);
+      captureModeRef.current = mode;
+      setIsRecording(true);
+      startedRef.current = true;
+    } catch (err: any) {
+      console.error('Failed to start audio capture:', err);
+      setError({
+        type: 'GENERAL_ERROR',
+        message:
+          typeof err === 'string'
+            ? err
+            : err?.message || 'Failed to start audio listening',
+      });
+    }
+  };
+
+  const stopListening = async () => {
+    setIsRecording(false);
+    setIsTranscribing(true);
+    try {
+      await invoke<string>('stop_audio_capture');
+    } catch (err: any) {
+      console.error('Failed to stop audio capture:', err);
+    } finally {
+      setIsTranscribing(false);
+      startedRef.current = false;
+    }
+  };
+
+  /** Mic button = pause / resume current mode (mic, system, or both). */
   const toggleVoice = async () => {
     const now = Date.now();
-    if (now - lastTriggerRef.current < 400) {
-      console.warn('Voice toggle debounced');
-      return;
-    }
+    if (now - lastTriggerRef.current < 400) return;
     lastTriggerRef.current = now;
 
     if (!isRecordingRef.current) {
-      // Start recording
-      setTranscript('');
-      transcriptRef.current = '';
-      
-      try {
-        await invoke('start_audio_capture', { mode: captureModeRef.current });
-        setIsRecording(true);
-      } catch (err: any) {
-        console.error('Failed to start audio capture:', err);
-        // Fallback to simulation if capture fails (like if CPAL has no device)
-        simulateSpeech();
-      }
+      await startListening(captureModeRef.current);
     } else {
-      // Stop recording and transcribe
-      setIsRecording(false);
-      setIsTranscribing(true);
-
-      try {
-        const text = await invoke<string>('stop_audio_capture');
-        setIsTranscribing(false);
-        if (text && text.trim().length > 0) {
-          setTranscript(text);
-          await triggerAISubmission(text);
-        }
-      } catch (err: any) {
-        setIsTranscribing(false);
-        console.error('Failed to stop/transcribe audio:', err);
-        setError({
-          type: 'GENERAL_ERROR',
-          message: typeof err === 'string' ? err : (err.message || JSON.stringify(err))
-        });
-      }
+      await stopListening();
     }
   };
 
-  const simulateSpeech = () => {
-    setIsRecording(true);
-    const phrases = [
-      "Let's review the actions for the sprint.",
-      "We need to package the next production installer.",
-      "Can you verify that SQLite runs offline.",
-      "All tests have successfully verified."
-    ];
-    let index = 0;
-    setTranscript(phrases[0] + ' ');
-    transcriptRef.current = phrases[0] + ' ';
+  /** Switch Mic / System / Both — keeps listening if already active. */
+  const changeCaptureMode = async (mode: CaptureMode) => {
+    if (mode === captureModeRef.current && isRecordingRef.current) return;
+    if (switchingRef.current) return;
+    switchingRef.current = true;
 
-    const simInterval = setInterval(() => {
-      index++;
-      if (index < phrases.length) {
-        setTranscript(prev => {
-          const next = prev + phrases[index] + ' ';
-          transcriptRef.current = next;
-          return next;
-        });
-      } else {
-        clearInterval(simInterval);
-        setIsRecording(false);
-        const final = transcriptRef.current;
-        triggerAISubmission(final);
+    setCaptureModeState(mode);
+    captureModeRef.current = mode;
+
+    try {
+      if (isRecordingRef.current) {
+        setIsTranscribing(true);
+        await invoke('stop_audio_capture');
+        await invoke('start_audio_capture', { mode });
+        setIsRecording(true);
+        startedRef.current = true;
       }
-    }, 2500);
+      // If paused, only store preference — resume will use captureModeRef
+    } catch (err) {
+      console.error('Failed to switch capture mode:', err);
+      setError({
+        type: 'GENERAL_ERROR',
+        message: 'Failed to switch audio source',
+      });
+    } finally {
+      setIsTranscribing(false);
+      switchingRef.current = false;
+    }
   };
+
+  // Auto-start in current preferred mode (default: both)
+  useEffect(() => {
+    let cancelled = false;
+
+    const boot = async () => {
+      try {
+        const state = await invoke<{ is_recording: boolean; mode: string }>(
+          'get_audio_capture_state'
+        );
+        if (cancelled) return;
+        if (state.is_recording) {
+          setIsRecording(true);
+          const m =
+            state.mode === 'both' || state.mode === 'system' || state.mode === 'mic'
+              ? (state.mode as CaptureMode)
+              : 'both';
+          setCaptureModeState(m);
+          captureModeRef.current = m;
+          startedRef.current = true;
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!cancelled && !startedRef.current) {
+        await startListening(captureModeRef.current);
+      }
+    };
+
+    boot();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [];
 
-    unlisteners.push(listen<{ text: string; speaker: string; source: string; status: string }>(
-      'audio-transcription',
-      (event) => {
-        setTranscript(event.payload.text);
-        transcriptRef.current = event.payload.text;
-      }
-    ));
+    unlisteners.push(
+      listen<{ text: string; speaker: string; source: string; status: string }>(
+        'audio-transcription',
+        (event) => {
+          setTranscript(event.payload.text);
+          transcriptRef.current = event.payload.text;
+          setIsRecording(true);
+        }
+      )
+    );
 
-    unlisteners.push(listen<{ prompt: string }>('trigger-ai-response', (event) => {
-      const payload = event.payload as any;
-      const prompt = typeof payload === 'string' ? payload : payload.prompt;
-      if (prompt) {
-        triggerAISubmission(prompt);
-      }
-    }));
+    unlisteners.push(
+      listen<{ prompt: string }>('trigger-ai-response', (event) => {
+        const payload = event.payload as any;
+        const prompt = typeof payload === 'string' ? payload : payload.prompt;
+        if (prompt) {
+          triggerAISubmission(prompt);
+        }
+      })
+    );
 
-    unlisteners.push(listen('ai-interrupted', () => {
-      if (cancelRef.current) {
-        cancelRef.current();
-      }
-    }));
+    unlisteners.push(
+      listen('ai-interrupted', () => {
+        if (cancelRef.current) {
+          cancelRef.current();
+        }
+      })
+    );
 
     const unlistenPromise = listen('toggle-voice', () => {
-      console.log('toggle-voice event received');
       toggleVoice();
     });
 
     (window as any).__toggleVoice = toggleVoice;
 
     return () => {
-      unlistenPromise.then(unlisten => unlisten());
-      unlisteners.forEach(promise => promise.then(unsub => unsub()));
+      unlistenPromise.then((unlisten) => unlisten());
+      unlisteners.forEach((promise) => promise.then((unsub) => unsub()));
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleVoiceDirect = () => {
@@ -197,12 +242,12 @@ export const useVoiceAgent = () => {
     }
   };
 
-  return { 
-    isRecording, 
+  return {
+    isRecording,
     isTranscribing,
-    transcript, 
-    captureMode, 
-    setCaptureMode, 
-    toggleVoice: toggleVoiceDirect 
+    transcript,
+    captureMode,
+    setCaptureMode: changeCaptureMode,
+    toggleVoice: toggleVoiceDirect,
   };
 };

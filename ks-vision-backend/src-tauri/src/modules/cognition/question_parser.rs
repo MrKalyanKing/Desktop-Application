@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SubQuestion {
@@ -76,31 +75,38 @@ impl QuestionParser {
         String::new()
     }
 
-    pub async fn parse_questions(&self, text: &str) -> Result<Vec<SubQuestion>, String> {
+    pub async fn parse_questions(
+        &self,
+        text: &str,
+        from_system_audio: bool,
+    ) -> Result<Vec<SubQuestion>, String> {
         let api_key = self.load_api_key();
         if api_key.is_empty() {
             return Err("Gemini API key is not configured.".to_string());
         }
 
-        let system_instruction = "You are an advanced meeting intelligence copilot. Your task is to analyze spoken transcripts (which may contain speech-to-text recognition errors, background noise, repetitions, broken grammar, or conversational fillers) and extract discrete, actionable questions or tasks.
+        let system_instruction = if from_system_audio {
+            "You are a meeting intelligence copilot listening to REMOTE callers (Meet/Teams/Zoom/YouTube). \
+Analyze the transcript (may contain STT errors / noise) and extract ONLY actionable questions or \
+explicit requests directed at the local user / interview candidate / assistant.
 
-For each extracted item, apply the following intelligence:
-1. Semantic Repairing: Fix grammar, eliminate repetitions (e.g., 'runs offline runs offline' -> 'runs offline'), correct obvious speech-to-text transcription typos, and rephrase fragmented or broken sentences into clean, grammatically correct questions.
-2. Filler Removal: Discard conversational fillers (e.g., 'uh', 'um', 'like', 'you know', 'actually').
-3. Context Inference: If a sentence is incomplete but the intention is clear, reconstruct it into a complete, well-formed question.
-4. Categorization: Set 'is_question' to true if the item represents an actionable question or task.
-5. Dependency Resolution: Trace if a task/question depends on another (use 1-based index dependencies, e.g., Q2 depends on Q1 -> [1]).
+RULES:
+1. Repair grammar and obvious STT errors into clean questions.
+2. Set is_question=true ONLY for real questions or actionable tasks (not greetings, filler, or statements).
+3. Ignore chit-chat, music lyrics, and UI announcements.
+4. If nothing actionable, return {\"questions\": []}.
+5. Output raw JSON only:
+{\"questions\":[{\"text\":\"...\",\"is_question\":true,\"dependencies\":[]}]}"
+        } else {
+            "You are an advanced meeting intelligence copilot. Analyze spoken transcripts \
+(may contain STT errors) and extract discrete actionable questions or tasks.
 
-Output a raw JSON object matching this schema:
-{
-  \"questions\": [
-    {
-      \"text\": \"Cleaned and reconstructed actionable question/task text\",
-      \"is_question\": boolean,
-      \"dependencies\": [number]
-    }
-  ]
-}";
+1. Semantic repair: fix grammar, remove repetitions/fillers.
+2. is_question=true for actionable questions/tasks only.
+3. If none, return {\"questions\": []}.
+4. Output raw JSON:
+{\"questions\":[{\"text\":\"...\",\"is_question\":true,\"dependencies\":[]}]}"
+        };
 
         let user_prompt = format!("Input: \"{}\"\n\nParse into the JSON schema.", text);
 
@@ -113,7 +119,8 @@ Output a raw JSON object matching this schema:
                 "parts": [{ "text": user_prompt }]
             }],
             "generationConfig": {
-                "responseMimeType": "application/json"
+                "responseMimeType": "application/json",
+                "temperature": 0.2
             }
         });
 
@@ -125,7 +132,7 @@ Output a raw JSON object matching this schema:
             println!("[QUESTION PARSER] Using: {}", active_model);
 
             let url = format!(
-                "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
                 active_model, api_key
             );
 
@@ -137,12 +144,15 @@ Output a raw JSON object matching this schema:
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
-                eprintln!("[QUESTION PARSER ERROR] Gemini API returned status {}: {}", status_code, err_text);
-                
+                eprintln!(
+                    "[QUESTION PARSER ERROR] Gemini API returned status {}: {}",
+                    status_code, err_text
+                );
+
                 if manager.is_quota_error(status_code, &err_text) {
                     let delay = manager.parse_retry_delay(&err_text);
                     manager.blacklist_model(&active_model, &err_text, delay);
-                    
+
                     attempts += 1;
                     if attempts < manager.models_len() {
                         let next_model = manager.select_model();
@@ -151,14 +161,19 @@ Output a raw JSON object matching this schema:
                     }
                 }
 
-                return Err(format!("Gemini API returned error status {}: {}", status_code, err_text));
+                return Err(format!(
+                    "Gemini API returned error status {}: {}",
+                    status_code, err_text
+                ));
             }
 
-            let gemini_resp: GeminiResponse = resp.json()
+            let gemini_resp: GeminiResponse = resp
+                .json()
                 .await
                 .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
 
-            let json_text = gemini_resp.candidates
+            let json_text = gemini_resp
+                .candidates
                 .and_then(|c| c.into_iter().next())
                 .and_then(|c| c.content)
                 .and_then(|c| c.parts)
@@ -166,8 +181,12 @@ Output a raw JSON object matching this schema:
                 .and_then(|p| p.text)
                 .unwrap_or_default();
 
-            let parsed: QuestionParseResponse = serde_json::from_str(&json_text)
-                .map_err(|e| format!("Failed to parse structured JSON questions: {}. Raw: {}", e, json_text))?;
+            let parsed: QuestionParseResponse = serde_json::from_str(&json_text).map_err(|e| {
+                format!(
+                    "Failed to parse structured JSON questions: {}. Raw: {}",
+                    e, json_text
+                )
+            })?;
 
             return Ok(parsed.questions);
         }

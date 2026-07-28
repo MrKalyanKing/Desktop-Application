@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 interface AudioIntelligenceUIProps {
   isRecording: boolean;
   isTranscribing: boolean;
-  captureMode: 'mic' | 'system';
+  captureMode: 'mic' | 'system' | 'both';
 }
 
 interface Question {
@@ -226,7 +226,12 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
           </span>
         </div>
         <span className="text-slate-500 font-mono">
-          Source: {captureMode === 'system' ? 'System Loopback' : 'Mic Input'}
+          Source:{' '}
+          {captureMode === 'both'
+            ? 'Mic + System (always on)'
+            : captureMode === 'system'
+              ? 'System Loopback'
+              : 'Mic Input'}
         </span>
       </div>
 

@@ -397,7 +397,7 @@ export const WidgetContent: React.FC = () => {
       {/* Audio Capture Mode Toggle */}
       {viewMode === 'chat' && (
         <div className="mb-1">
-          <ModeToggle mode={captureMode} onChange={setCaptureMode} disabled={isRecording || isTranscribing} />
+          <ModeToggle mode={captureMode} onChange={setCaptureMode} disabled={isTranscribing} />
         </div>
       )}
 
@@ -423,7 +423,7 @@ export const WidgetContent: React.FC = () => {
                 ? 'bg-red-950 border-red-800/40 text-red-400 animate-pulse' 
                 : 'bg-slate-950/40 border-slate-800/40 text-slate-400 hover:text-cyan-450 hover:border-cyan-800/40'
             }`}
-            title="Toggle Voice Input (Ctrl+Shift+V)"
+            title={isRecording ? 'Pause continuous listening' : 'Resume continuous listening (mic + system)'}
           >
             🎤
           </button>
