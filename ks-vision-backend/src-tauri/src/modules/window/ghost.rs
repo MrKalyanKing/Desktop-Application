@@ -22,6 +22,7 @@ pub fn exit_ghost_mode(window: &WebviewWindow) -> Result<(), String> {
     window
         .set_focus()
         .map_err(|e| format!("Failed to focus window: {e}"))?;
+    let _ = window.set_cursor_visible(false);
     Ok(())
 }
 

@@ -41,6 +41,8 @@ pub fn run() {
         let _ = modules::window::ghost::enter_ghost_mode(&window);
         modules::window::stealth::protect_from_capture(&window);
         let _ = modules::window::manager::init_window_position(&window);
+        // Hide OS cursor over the main window (screen-share friendly)
+        let _ = window.set_cursor_visible(false);
       }
 
       // Ctrl+Shift+K toggles ghost mode (backend only — no UI wiring)
@@ -78,6 +80,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       modules::window::commands::save_position,
+      modules::window::commands::set_os_cursor_visible,
       modules::window::ghost::show_window,
       modules::window::ghost::hide_window,
       modules::window::ghost::toggle_ghost_mode_cmd,

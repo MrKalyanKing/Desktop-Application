@@ -1,5 +1,27 @@
 @import "./variables.css";
 
+/*
+ * Hide the OS cursor over the stealth widget.
+ * Screen-share tools track the system cursor — hiding it means teammates
+ * do not see a pointer over the (capture-excluded) app. A custom cursor is
+ * drawn inside the webview for the local admin only (see LocalOnlyCursor).
+ */
+html:not(.region-selector-mode),
+html:not(.region-selector-mode) body,
+html:not(.region-selector-mode) #root,
+html:not(.region-selector-mode) body * {
+  cursor: none !important;
+}
+
+.local-only-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  will-change: transform;
+}
+
 html, body {
   background: transparent !important;
   margin: 0;
