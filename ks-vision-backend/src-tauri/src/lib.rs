@@ -1,6 +1,7 @@
 mod modules;
 
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,34 +36,51 @@ pub fn run() {
       
       let _ = modules::tray::init_tray(app);
 
-      if let Ok(settings_json) = modules::settings::storage::load_settings(app.handle()) {
-        if settings_json.contains("\"startMinimized\":true") {
-          if let Some(win) = app.get_webview_window("main") {
-            let _ = win.hide();
-          }
-        }
-      }
-
       if let Some(window) = app.get_webview_window("main") {
+        // Ghost mode: start hidden, no taskbar entry
+        let _ = modules::window::ghost::enter_ghost_mode(&window);
         modules::window::stealth::protect_from_capture(&window);
         let _ = modules::window::manager::init_window_position(&window);
       }
+
+      // Ctrl+Shift+K toggles ghost mode (backend only — no UI wiring)
+      let ghost_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
+      app.global_shortcut().on_shortcut(ghost_shortcut, |app_handle, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+          let _ = modules::window::ghost::toggle_ghost_mode(app_handle);
+        }
+      })?;
       
       Ok(())
     })
     .manage(modules::ai::commands::AiState::new())
     .manage(modules::audio::commands::AudioState::new())
     .on_window_event(|window, event| {
-      if let tauri::WindowEvent::Moved(position) = event {
-        let app_handle = window.app_handle();
-        let mut s = modules::config::settings::load_settings(app_handle);
-        s.x = position.x;
-        s.y = position.y;
-        let _ = modules::config::settings::save_settings(app_handle, &s);
+      match event {
+        WindowEvent::Moved(position) => {
+          let app_handle = window.app_handle();
+          let mut s = modules::config::settings::load_settings(app_handle);
+          s.x = position.x;
+          s.y = position.y;
+          let _ = modules::config::settings::save_settings(app_handle, &s);
+        }
+        WindowEvent::CloseRequested { api, .. } => {
+          // X / close on main → ghost mode instead of quitting (quit via tray)
+          if window.label() == "main" {
+            api.prevent_close();
+            if let Some(win) = window.app_handle().get_webview_window("main") {
+              let _ = modules::window::ghost::enter_ghost_mode(&win);
+            }
+          }
+        }
+        _ => {}
       }
     })
     .invoke_handler(tauri::generate_handler![
       modules::window::commands::save_position,
+      modules::window::ghost::show_window,
+      modules::window::ghost::hide_window,
+      modules::window::ghost::toggle_ghost_mode_cmd,
       modules::ai::commands::ai_health_check,
       modules::ai::commands::ai_get_models,
       modules::ai::commands::ask_ai,
