@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{State, Manager, AppHandle, Emitter};
 use cpal::traits::StreamTrait;
 use crate::modules::audio::capture_engine::{CaptureEngine, AudioSource, SendStream};
-use crate::modules::audio::speaker_tracker::{SpeakerTracker, SpeakerId};
+use crate::modules::audio::speaker_tracker::SpeakerTracker;
 use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::audio::segmentation_engine::SegmentationEngine;
 use crate::modules::transcription::gemini_service::{GeminiTranscriptionService, TranscriptChunk};
@@ -77,6 +77,10 @@ fn spawn_background_worker(app: AppHandle, state: Arc<AudioState>, source: Audio
         
         let mut processed_samples_len = 0;
         let mut recent_speech_samples = Vec::new();
+        let mut utterance_samples = Vec::new();
+        let mut noise_suppressor = crate::modules::audio::noise_suppress::NoiseSuppressor::new();
+        let mut last_partial_ticks = 0;
+        
         let vad = segmentation_engine.get_vad();
         let mut last_state = vad.get_state();
         let mut interval = tokio::time::interval(Duration::from_millis(30));
@@ -91,13 +95,17 @@ fn spawn_background_worker(app: AppHandle, state: Arc<AudioState>, source: Audio
                     if all_samples.len() > processed_samples_len {
                         let new_samples = &all_samples[processed_samples_len..];
                         
-                        // Emit waveform visualization data from Tokio worker thread to prevent COM crashes
+                        // 1. Denoise and enhance incoming samples in-place
+                        let mut clean_samples = new_samples.to_vec();
+                        noise_suppressor.process(&mut clean_samples, 16000);
+                        
+                        // 2. Emit waveform visualizer data
                         let mut sum_sq = 0.0;
-                        for &x in new_samples {
+                        for &x in &clean_samples {
                             sum_sq += x * x;
                         }
-                        let rms = (sum_sq / new_samples.len().max(1) as f32).sqrt();
-                        let pitch = crate::modules::audio::vad_engine::estimate_pitch(new_samples, 16000).unwrap_or(0.0);
+                        let rms = (sum_sq / clean_samples.len().max(1) as f32).sqrt();
+                        let pitch = crate::modules::audio::vad_engine::estimate_pitch(&clean_samples, 16000).unwrap_or(0.0);
                         let _ = app.emit("audio-waveform-data", serde_json::json!({
                             "volume": rms,
                             "pitch": pitch,
@@ -105,12 +113,18 @@ fn spawn_background_worker(app: AppHandle, state: Arc<AudioState>, source: Audio
                         }));
 
                         let frame_size = 480; // 30ms at 16kHz
-                        
                         let mut reset_occurred = false;
-                        for chunk in new_samples.chunks(frame_size) {
+                        
+                        for chunk in clean_samples.chunks(frame_size) {
                             if chunk.len() == frame_size {
                                 let current_vad_state = vad.get_state();
-                                if current_vad_state == crate::modules::audio::vad_engine::VadState::Speech {
+                                
+                                // Append clean samples if in active speech or holding
+                                if current_vad_state == crate::modules::audio::vad_engine::VadState::Speech 
+                                    || current_vad_state == crate::modules::audio::vad_engine::VadState::Holding 
+                                {
+                                    utterance_samples.extend_from_slice(chunk);
+                                    
                                     recent_speech_samples.extend_from_slice(chunk);
                                     if recent_speech_samples.len() > 3200 {
                                         let excess = recent_speech_samples.len() - 3200;
@@ -132,22 +146,31 @@ fn spawn_background_worker(app: AppHandle, state: Arc<AudioState>, source: Audio
                                 }
                                 
                                 if boundary_triggered {
-                                    let utterance_samples = &all_samples[0..processed_samples_len + chunk.len()];
+                                    let utterance_copy = utterance_samples.clone();
+                                    let app_clone = app.clone();
+                                    let state_manager_clone = Arc::clone(&state_manager);
+                                    let speaker_tracker_clone = Arc::clone(&speaker_tracker);
+                                    let transcription_service_clone = Arc::clone(&transcription_service);
+                                    let question_parser_clone = Arc::clone(&question_parser);
                                     
-                                    process_utterance(
-                                        &app,
-                                        &state_manager,
-                                        &speaker_tracker,
-                                        &transcription_service,
-                                        &question_parser,
-                                        utterance_samples,
-                                        source,
-                                        source_label,
-                                    ).await;
+                                    tokio::spawn(async move {
+                                        process_utterance(
+                                            &app_clone,
+                                            &state_manager_clone,
+                                            &speaker_tracker_clone,
+                                            &transcription_service_clone,
+                                            &question_parser_clone,
+                                            &utterance_copy,
+                                            source,
+                                            source_label,
+                                        ).await;
+                                    });
                                     
                                     buffer.lock().unwrap().clear();
                                     processed_samples_len = 0;
+                                    utterance_samples.clear();
                                     recent_speech_samples.clear();
+                                    last_partial_ticks = 0;
                                     reset_occurred = true;
                                     break;
                                 }
@@ -155,8 +178,46 @@ fn spawn_background_worker(app: AppHandle, state: Arc<AudioState>, source: Audio
                         }
                         
                         if !reset_occurred {
-                            if processed_samples_len > 0 || !new_samples.is_empty() {
-                                processed_samples_len = all_samples.len();
+                            processed_samples_len = all_samples.len();
+                            
+                            // Streaming partial transcription every 600ms
+                            if (last_state == crate::modules::audio::vad_engine::VadState::Speech 
+                                || last_state == crate::modules::audio::vad_engine::VadState::Holding)
+                                && utterance_samples.len() >= 16000
+                            {
+                                last_partial_ticks += 1;
+                                if last_partial_ticks >= 20 {
+                                    last_partial_ticks = 0;
+                                    
+                                    let utterance_copy = utterance_samples.clone();
+                                    let app_clone = app.clone();
+                                    let transcription_service_clone = Arc::clone(&transcription_service);
+                                    let speaker_id = if source == AudioSource::Microphone {
+                                        "You".to_string()
+                                    } else {
+                                        speaker_tracker.identify_speaker(&utterance_copy, 16000)
+                                    };
+                                    
+                                    tokio::spawn(async move {
+                                        if let Ok((partial_text, _)) = transcription_service_clone.transcribe(
+                                            &utterance_copy,
+                                            source_label,
+                                            &speaker_id,
+                                            &[]
+                                        ).await {
+                                            if !partial_text.is_empty() {
+                                                let _ = app_clone.emit("audio-transcription", serde_json::json!({
+                                                    "text": partial_text,
+                                                    "speaker": speaker_id,
+                                                    "source": source_label.to_lowercase(),
+                                                    "status": "partial",
+                                                }));
+                                            }
+                                        }
+                                    });
+                                }
+                            } else {
+                                last_partial_ticks = 0;
                             }
                         }
                     }
@@ -413,7 +474,7 @@ pub fn set_ai_generating_state(state: State<'_, AudioState>, generating: bool) {
 }
 
 #[tauri::command]
-pub async fn pop_next_pending_question(app: AppHandle, state: State<'_, AudioState>) -> Result<Option<String>, String> {
+pub async fn pop_next_pending_question(_app: AppHandle, state: State<'_, AudioState>) -> Result<Option<String>, String> {
     if let Some(q) = state.state_manager.pop_question() {
         if q.is_question {
             Ok(Some(q.text))

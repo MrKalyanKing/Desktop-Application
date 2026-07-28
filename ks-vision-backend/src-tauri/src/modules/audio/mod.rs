@@ -7,3 +7,4 @@ pub mod speaker_tracker;
 pub mod segmentation_engine;
 pub mod capture_engine;
 pub mod commands;
+pub mod noise_suppress;

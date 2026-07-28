@@ -100,7 +100,9 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
       }
       
       setTranscript(text);
-      setAudioState('idle');
+      if (event.payload.status === 'final') {
+        setAudioState('idle');
+      }
     }).then(unsub => unlisteners.push(unsub));
 
     // Audio clarification needed listener

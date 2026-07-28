@@ -1,4 +1,4 @@
-use crate::modules::audio::vad_engine::{VADEngine, is_pitch_rising, estimate_pitch};
+use crate::modules::audio::vad_engine::{VADEngine, estimate_pitch};
 use crate::modules::audio::capture_engine::AudioSource;
 use crate::modules::audio::speaker_tracker::SpeakerId;
 
@@ -87,13 +87,11 @@ impl SegmentationEngine {
 
         let text_lower = interim_transcript.to_lowercase();
         let mut match_pos = None;
-        let mut matched_pattern_len = 0;
 
         for &pattern in &restart_patterns {
             if let Some(idx) = text_lower.find(pattern.trim_matches('\\').trim_matches('b')) {
                 if match_pos.is_none() || idx < match_pos.unwrap() {
                     match_pos = Some(idx);
-                    matched_pattern_len = pattern.len();
                 }
             }
         }
