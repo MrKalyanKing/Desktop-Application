@@ -10,8 +10,8 @@ pub const MIN_UTTERANCE_SAMPLES: usize = 19_200;
 pub const MERGE_GAP: Duration = Duration::from_millis(1_800);
 /// Hard cap — force send so we never hold forever (~10s)
 const MAX_PENDING_SAMPLES: usize = 160_000;
-/// Absolute floor after waiting (~0.9s)
-const FLUSH_MIN_SAMPLES: usize = 14_400;
+/// Absolute floor after waiting — same as API gate (~1.2s)
+const FLUSH_MIN_SAMPLES: usize = 19_200;
 
 pub struct ChunkOptimizer {
     pending: Vec<f32>,

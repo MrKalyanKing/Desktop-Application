@@ -14,16 +14,19 @@ use crate::modules::transcription::wav::write_wav_to_bytes;
 
 const VOICE_SYSTEM_MIC: &str = "You are an AI Meeting Copilot. The user is speaking to you. \
 Listen carefully to the FULL audio — including technical terms (NestJS, Kubernetes, PostgreSQL, JWT, Docker, Redis, TypeORM, etc.). \
-If you can understand anything actionable (question, request, or statement to respond to), answer concisely under 100 words. \
-Prefer answering over skipping. Only reply with exactly SKIP if the audio is pure silence, pure noise, or completely unintelligible.";
+Answer directly and concisely (under 100 words). Always give a useful reply — never say SKIP.";
 
 const VOICE_SYSTEM_MEETING: &str = "You are an AI Meeting Copilot listening to another person speaking in a meeting. \
 Listen carefully to the FULL clip — preserve technical vocabulary exactly. \
-If there is any clear question, request, or point worth a short helpful reply, answer under 100 words. \
-Prefer answering over skipping. Only reply with exactly SKIP if the audio is silence, noise, or has no intelligible speech.";
+If there is a question or actionable point, answer helpfully under 100 words. Always give a useful reply — never say SKIP.";
 
 const MAX_OUTPUT_TOKENS: u32 = 280;
 const MAX_SAMPLES: usize = 12 * 16000; // 12s cap
+/// Local gate — junk that would be SKIP'd must never hit the API.
+const MIN_API_SAMPLES: usize = 19_200; // 1.2s @ 16k
+const MIN_RMS: f32 = 0.008;
+const MIN_PEAK: f32 = 0.025;
+const MIN_SPEECH_RATIO: f32 = 0.18; // ≥18% of frames must look like speech
 
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -127,18 +130,68 @@ fn is_skip_reply(text: &str) -> bool {
     upper == "SKIP" || (upper.starts_with("SKIP") && t.len() < 12)
 }
 
-/// Send one complete utterance to Gemini. Returns None for SKIP / too-short / silence.
+fn speech_frame_ratio(samples: &[f32], frame: usize) -> f32 {
+    if samples.is_empty() || frame == 0 {
+        return 0.0;
+    }
+    let mut total = 0usize;
+    let mut speech = 0usize;
+    let mut floor = 0.006f32;
+    for chunk in samples.chunks(frame) {
+        total += 1;
+        let mut sum = 0.0f32;
+        for &s in chunk {
+            sum += s * s;
+        }
+        let rms = (sum / chunk.len() as f32).sqrt();
+        if rms > floor * 2.2 {
+            speech += 1;
+            floor = (floor * 0.995).max(0.002);
+        } else {
+            floor = floor * 0.97 + rms * 0.03;
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        speech as f32 / total as f32
+    }
+}
+
+/// Local pre-filter: return Some(reason) if we must NOT call Gemini.
+fn local_skip_reason(samples: &[f32], sample_rate: u32) -> Option<&'static str> {
+    if samples.len() < MIN_API_SAMPLES {
+        return Some("too short");
+    }
+    let (rms, peak) = rms_peak(samples);
+    if rms < MIN_RMS {
+        return Some("too quiet (rms)");
+    }
+    if peak < MIN_PEAK {
+        return Some("too quiet (peak)");
+    }
+    let ratio = speech_frame_ratio(samples, 480);
+    if ratio < MIN_SPEECH_RATIO {
+        return Some("not enough speech");
+    }
+    let _ = sample_rate;
+    None
+}
+
+/// Send one complete utterance to Gemini.
+/// Junk / silence is filtered **locally** — no API call for those.
 pub async fn answer_from_audio(
     samples: &[f32],
     sample_rate: u32,
     from_system_audio: bool,
 ) -> Result<Option<String>, String> {
     let prepared = preprocess::prepare_for_voice(samples);
-    // Reject crumbs — short clips cause SKIP and wasted API calls.
-    if prepared.len() < 14_400 {
+
+    if let Some(reason) = local_skip_reason(&prepared, sample_rate) {
         println!(
-            "[API SKIP] too short after trim ({:.2}s) — not calling Gemini",
-            prepared.len() as f32 / sample_rate as f32
+            "[LOCAL SKIP] {} ({:.2}s) — not calling Gemini",
+            reason,
+            prepared.len() as f32 / sample_rate.max(1) as f32
         );
         return Ok(None);
     }
@@ -153,6 +206,16 @@ pub async fn answer_from_audio(
     } else {
         prepared.as_slice()
     };
+
+    // Final guard after clip — still no network if somehow empty.
+    if let Some(reason) = local_skip_reason(clipped, sample_rate) {
+        println!(
+            "[LOCAL SKIP] {} ({:.2}s) — not calling Gemini",
+            reason,
+            clipped.len() as f32 / sample_rate.max(1) as f32
+        );
+        return Ok(None);
+    }
 
     let duration_s = clipped.len() as f32 / sample_rate as f32;
     let capture_s = samples.len() as f32 / sample_rate as f32;
@@ -338,10 +401,12 @@ pub async fn answer_from_audio(
             println!("=================================");
         }
 
+        // Model should never SKIP (prompt forbids it). If it still does, drop silently —
+        // we already paid for this call; local filter should prevent most of these.
         if is_skip_reply(&text) {
             println!(
-                "[API SKIP] model returned SKIP for voice-{} ({:.2}s audio)",
-                request_id, duration_s
+                "[API SKIP] unexpected SKIP from model for voice-{} — showing nothing",
+                request_id
             );
             return Ok(None);
         }

@@ -18,7 +18,7 @@ use crate::modules::transcription::gemini_voice;
 
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
 const SPEECH_LEAD_PAD: usize = 6_400;
-const HARD_MIN_SAMPLES: usize = 14_400; // ~0.9s — drop crumbs before API
+const HARD_MIN_SAMPLES: usize = 19_200; // ~1.2s — drop crumbs before queue/API
 const MAX_QUEUE: usize = 8;
 /// If a request hangs longer than this, free the slot so listening continues.
 const JOB_WATCHDOG: Duration = Duration::from_secs(90);
