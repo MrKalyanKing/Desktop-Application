@@ -6,7 +6,7 @@ use crate::modules::audio::capture_engine::{CaptureEngine, AudioSource, SendStre
 use crate::modules::audio::speaker_tracker::SpeakerTracker;
 use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::audio::segmentation_engine::SegmentationEngine;
-use crate::modules::audio::echo_reference::EchoReferenceBuffer;
+use crate::modules::audio::echo_reference::{EchoReferenceBuffer, AIAudioOutputSink};
 use crate::modules::audio::streaming_pipeline;
 
 pub struct AudioState {
