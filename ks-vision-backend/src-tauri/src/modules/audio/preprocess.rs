@@ -1,4 +1,4 @@
-//! Light post-endpoint trim helpers for Whisper windows.
+//! Light post-endpoint trim helpers for Gemini audio clips.
 //! Primary gain/denoise happen in streaming AGC + RNNoise BEFORE VAD.
 
 /// Soft noise gate: attenuate frames below adaptive floor (keeps speech, reduces hiss/music bed).
@@ -108,7 +108,7 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
     samples[start..end].to_vec()
 }
 
-/// Light trim before Whisper. Gain/denoise already applied continuously upstream.
+/// Light trim before Gemini audio STT. Gain/denoise already applied continuously upstream.
 /// Peak normalize is intentionally NOT used as primary AGC anymore.
 pub fn prepare_for_stt(samples: &[f32]) -> Vec<f32> {
     if samples.is_empty() {

@@ -20,7 +20,6 @@ export interface VoiceSettings {
   inputDevice: string;
   pushToTalkShortcut: string;
   silenceTimeout: number;
-  whisperModel: string;
 }
 
 export interface ScreenshotSettings {

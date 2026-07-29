@@ -7,7 +7,7 @@ pub fn postprocess_transcript(raw: &str, previous_context: &str) -> String {
         return text;
     }
 
-    // Strip whisper artifacts
+    // Strip STT artifacts
     for junk in ["[BLANK_AUDIO]", "[Silence]", "(silence)", "[silence]", "♪", "♫"] {
         text = text.replace(junk, "");
     }

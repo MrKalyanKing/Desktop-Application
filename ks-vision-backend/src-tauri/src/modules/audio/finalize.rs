@@ -1,4 +1,4 @@
-//! Finalize refined TEXT and dispatch to Gemini (never audio).
+//! Finalize refined transcript text and dispatch to Gemini reasoning (text-only answers).
 
 use tauri::{AppHandle, Emitter};
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
@@ -62,7 +62,7 @@ pub async fn process_next_question(app: &AppHandle, state_manager: &Conversation
     }
 }
 
-/// Finalize a refined transcript (Whisper already done). Text-only to Gemini.
+/// Finalize a refined transcript. Answer path is text-only Gemini.
 pub async fn finalize_transcript(
     app: &AppHandle,
     capture_engine: &CaptureEngine,

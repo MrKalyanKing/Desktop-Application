@@ -1,15 +1,15 @@
-//! Ultra-low-latency streaming speech worker:
-//! capture → RNNoise → AGC → VAD → overlapping Whisper → incremental transcript → intent → Gemini text.
+//! Streaming speech worker (no Whisper):
+//! capture → RNNoise → AGC → VAD → optimized chunk → Gemini multimodal audio → intent → text Gemini.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
+use crate::modules::audio::chunk_optimizer::ChunkOptimizer;
 use crate::modules::audio::finalize;
 use crate::modules::audio::perf_metrics;
-use crate::modules::audio::preprocess;
 use crate::modules::audio::rnnoise_processor::RnnoiseProcessor;
 use crate::modules::audio::speaker_tracker::SpeakerTracker;
 use crate::modules::audio::streaming_agc::StreamingAgc;
@@ -17,22 +17,19 @@ use crate::modules::audio::vad_engine::{VadProfile, VadState, VADEngine};
 use crate::modules::cognition::question_parser::QuestionParser;
 use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::transcription::gemini_service::GeminiTranscriptionService;
-use crate::modules::transcription::intent_detector;
-use crate::modules::transcription::postprocess;
-use crate::modules::transcription::transcript_builder::IncrementalTranscriptBuilder;
-use crate::modules::transcription::whisper_engine::WhisperEngine;
 
-const WINDOW_SAMPLES: usize = 32_000; // ~2.0s
-const HOP_SAMPLES: usize = 11_200; // ~0.7s
-const MIN_PARTIAL_SAMPLES: usize = 8_000; // ~0.5s
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
+/// Merge clips shorter than ~0.7s within 900ms to cut Gemini request count.
+const MIN_SEND_SAMPLES: usize = 11_200;
+const MERGE_WINDOW_MS: u64 = 900;
+const MIN_REQUEST_GAP_MS: u64 = 400;
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
     capture_engine: Arc<CaptureEngine>,
     state_manager: Arc<ConversationStateManager>,
     speaker_tracker: Arc<SpeakerTracker>,
-    _transcription_service: Arc<GeminiTranscriptionService>,
+    transcription_service: Arc<GeminiTranscriptionService>,
     question_parser: Arc<QuestionParser>,
     inflight_stt: Arc<AtomicUsize>,
     source: AudioSource,
@@ -71,9 +68,7 @@ pub fn spawn_streaming_worker(
 
         let mut rnnoise = RnnoiseProcessor::new();
         let mut agc = StreamingAgc::new();
-        let builder = Arc::new(Mutex::new(IncrementalTranscriptBuilder::new()));
-        let early_dispatched = Arc::new(AtomicBool::new(false));
-        let partial_inflight = Arc::new(AtomicUsize::new(0));
+        let mut optimizer = ChunkOptimizer::new();
 
         let mut raw_cursor = 0usize;
         let mut scratch = Vec::with_capacity(4096);
@@ -82,7 +77,6 @@ pub fn spawn_streaming_worker(
         let mut speech_start: Option<usize> = None;
         let mut recent_speech = Vec::new();
         let mut last_state = vad.get_state();
-        let mut last_partial_at = 0usize;
         let mut remnant = Vec::new();
 
         let max_final_inflight = if source == AudioSource::SystemLoopback {
@@ -94,7 +88,25 @@ pub fn spawn_streaming_worker(
 
         loop {
             tokio::select! {
-                _ = &mut stop_rx => { break; }
+                _ = &mut stop_rx => {
+                    // Flush any merged short clips on stop
+                    if let Some(samples) = optimizer.flush_pending() {
+                        submit_audio_job(
+                            app.clone(),
+                            Arc::clone(&capture_engine),
+                            Arc::clone(&state_manager),
+                            Arc::clone(&speaker_tracker),
+                            Arc::clone(&transcription_service),
+                            Arc::clone(&question_parser),
+                            Arc::clone(&inflight_stt),
+                            samples,
+                            source,
+                            source_label,
+                            max_final_inflight,
+                        );
+                    }
+                    break;
+                }
                 _ = interval.tick() => {
                     {
                         let guard = raw_buffer.lock().unwrap();
@@ -105,14 +117,26 @@ pub fn spawn_streaming_worker(
                             speech_start = None;
                             recent_speech.clear();
                             remnant.clear();
-                            builder.lock().unwrap().reset();
-                            last_partial_at = 0;
-                            early_dispatched.store(false, Ordering::Relaxed);
                         }
                         guard.copy_from(raw_cursor, &mut scratch);
                         raw_cursor = guard.len();
                     }
                     if scratch.is_empty() {
+                        if let Some(samples) = optimizer.flush_if_expired(Duration::from_millis(MERGE_WINDOW_MS)) {
+                            submit_audio_job(
+                                app.clone(),
+                                Arc::clone(&capture_engine),
+                                Arc::clone(&state_manager),
+                                Arc::clone(&speaker_tracker),
+                                Arc::clone(&transcription_service),
+                                Arc::clone(&question_parser),
+                                Arc::clone(&inflight_stt),
+                                samples,
+                                source,
+                                source_label,
+                                max_final_inflight,
+                            );
+                        }
                         continue;
                     }
 
@@ -126,10 +150,8 @@ pub fn spawn_streaming_worker(
                         if let Some(s) = speech_start.as_mut() {
                             *s = s.saturating_sub(excess);
                         }
-                        last_partial_at = last_partial_at.saturating_sub(excess);
                     }
 
-                    // Frame-align VAD input
                     remnant.extend_from_slice(&clean_buf[vad_cursor.min(clean_buf.len())..]);
                     vad_cursor = clean_buf.len();
                     let frame_size = 480;
@@ -145,9 +167,6 @@ pub fn spawn_streaming_worker(
                         if matches!(st, VadState::Speech | VadState::Holding) {
                             if speech_start.is_none() {
                                 speech_start = Some(abs_pos.saturating_sub(frame_size));
-                                builder.lock().unwrap().reset();
-                                last_partial_at = abs_pos;
-                                early_dispatched.store(false, Ordering::Relaxed);
                             }
                             recent_speech.extend_from_slice(&chunk);
                             if recent_speech.len() > 3200 {
@@ -182,7 +201,6 @@ pub fn spawn_streaming_worker(
                     }
                     perf_metrics::log_stage("vad", source_key, t_vad);
 
-                    // Waveform from latest denoised chunk
                     let mut sum_sq = 0.0f32;
                     for &x in &denoised {
                         sum_sq += x * x;
@@ -196,109 +214,6 @@ pub fn spawn_streaming_worker(
                             "source": source_key,
                         }),
                     );
-
-                    // Overlapping partial Whisper while speaking
-                    if matches!(vad.get_state(), VadState::Speech | VadState::Holding) {
-                        if let Some(start) = speech_start {
-                            let end = clean_buf.len();
-                            if end.saturating_sub(last_partial_at) >= HOP_SAMPLES
-                                && end.saturating_sub(start) >= MIN_PARTIAL_SAMPLES
-                                && partial_inflight.load(Ordering::Relaxed) == 0
-                                && !early_dispatched.load(Ordering::Relaxed)
-                            {
-                                let win_start = end.saturating_sub(WINDOW_SAMPLES).max(start);
-                                let window = clean_buf[win_start..end].to_vec();
-                                last_partial_at = end;
-                                partial_inflight.fetch_add(1, Ordering::Relaxed);
-
-                                let app2 = app.clone();
-                                let builder2 = Arc::clone(&builder);
-                                let early2 = Arc::clone(&early_dispatched);
-                                let inflight = Arc::clone(&partial_inflight);
-                                let capture_engine2 = Arc::clone(&capture_engine);
-                                let state_manager2 = Arc::clone(&state_manager);
-                                let source_label2 = source_label.to_string();
-                                let source_key2 = source_key.to_string();
-                                let prompt = builder.lock().unwrap().current().to_string();
-
-                                tokio::spawn(async move {
-                                    let t0 = perf_metrics::now();
-                                    let prepared = preprocess::prepare_for_stt(&window);
-                                    let whisper = WhisperEngine::new();
-                                    let result = whisper
-                                        .transcribe_with_prompt(
-                                            &prepared,
-                                            16000,
-                                            if prompt.is_empty() {
-                                                None
-                                            } else {
-                                                Some(prompt.as_str())
-                                            },
-                                        )
-                                        .await;
-                                    perf_metrics::log_stage("whisper_partial", &source_key2, t0);
-                                    inflight.fetch_sub(1, Ordering::Relaxed);
-
-                                    let Ok(r) = result else { return };
-                                    if r.text.trim().is_empty() {
-                                        return;
-                                    }
-
-                                    let t_ref = perf_metrics::now();
-                                    let cleaned =
-                                        postprocess::postprocess_transcript(&r.text, &prompt);
-                                    perf_metrics::log_stage(
-                                        "transcript_refinement",
-                                        &source_key2,
-                                        t_ref,
-                                    );
-
-                                    let updated = {
-                                        let mut b = builder2.lock().unwrap();
-                                        b.ingest_partial(&cleaned)
-                                    };
-
-                                    if let Some(text) = updated {
-                                        let _ = app2.emit(
-                                            "audio-transcription",
-                                            serde_json::json!({
-                                                "text": text,
-                                                "speaker": if source == AudioSource::Microphone { "You" } else { "Speaker" },
-                                                "source": source_label2.to_lowercase(),
-                                                "status": "partial",
-                                            }),
-                                        );
-
-                                        // Early exclusive-mic dispatch when question looks complete
-                                        let exclusive_mic = source == AudioSource::Microphone
-                                            && !capture_engine2
-                                                .is_recording(AudioSource::SystemLoopback);
-                                        if exclusive_mic
-                                            && intent_detector::looks_like_complete_question(&text)
-                                            && !intent_detector::is_trivial_utterance(&text)
-                                            && !early2.load(Ordering::Relaxed)
-                                            && !state_manager2.is_ai_generating()
-                                        {
-                                            early2.store(true, Ordering::Relaxed);
-                                            let t_q = perf_metrics::now();
-                                            println!("[INTENT] Early question: {}", text);
-                                            finalize::enqueue_and_trigger_text(
-                                                &app2,
-                                                &state_manager2,
-                                                &text,
-                                            )
-                                            .await;
-                                            perf_metrics::log_stage(
-                                                "question_detection",
-                                                "early",
-                                                t_q,
-                                            );
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
 
                     if boundary {
                         let start = speech_start
@@ -325,98 +240,119 @@ pub fn spawn_streaming_worker(
                         remnant.clear();
                         speech_start = None;
                         recent_speech.clear();
-                        last_partial_at = 0;
 
-                        let prior = builder.lock().unwrap().current().to_string();
-                        builder.lock().unwrap().reset();
-                        let already = early_dispatched.swap(false, Ordering::Relaxed);
-
-                        if utterance.len() >= 1600
-                            && inflight_stt.load(Ordering::Relaxed) < max_final_inflight
-                        {
-                            inflight_stt.fetch_add(1, Ordering::Relaxed);
-                            let app2 = app.clone();
-                            let capture_engine2 = Arc::clone(&capture_engine);
-                            let state_manager2 = Arc::clone(&state_manager);
-                            let speaker_tracker2 = Arc::clone(&speaker_tracker);
-                            let question_parser2 = Arc::clone(&question_parser);
-                            let inflight2 = Arc::clone(&inflight_stt);
-
-                            tokio::spawn(async move {
-                                let t0 = perf_metrics::now();
-                                let prepared = preprocess::prepare_for_stt(&utterance);
-                                let whisper = WhisperEngine::new();
-                                let final_res = whisper
-                                    .transcribe_with_prompt(
-                                        &prepared,
-                                        16000,
-                                        if prior.is_empty() {
-                                            None
-                                        } else {
-                                            Some(prior.as_str())
-                                        },
-                                    )
-                                    .await;
-                                perf_metrics::log_stage("whisper_final", source_label, t0);
-
-                                let (text, confidence) = match final_res {
-                                    Ok(r) => {
-                                        let t_ref = perf_metrics::now();
-                                        let cleaned =
-                                            postprocess::postprocess_transcript(&r.text, &prior);
-                                        perf_metrics::log_stage(
-                                            "transcript_refinement",
-                                            source_label,
-                                            t_ref,
-                                        );
-                                        let best = if cleaned.len() >= prior.len() {
-                                            cleaned
-                                        } else if !prior.is_empty() {
-                                            prior
-                                        } else {
-                                            cleaned
-                                        };
-                                        (best, r.confidence)
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[Whisper] final failed: {}", e);
-                                        (prior, 0.7)
-                                    }
-                                };
-
-                                if already {
-                                    let _ = app2.emit(
-                                        "audio-transcription",
-                                        serde_json::json!({
-                                            "text": text,
-                                            "speaker": "You",
-                                            "source": source_label.to_lowercase(),
-                                            "status": "final",
-                                        }),
-                                    );
-                                    inflight2.fetch_sub(1, Ordering::Relaxed);
-                                    return;
-                                }
-
-                                finalize::finalize_transcript(
-                                    &app2,
-                                    &capture_engine2,
-                                    &state_manager2,
-                                    &speaker_tracker2,
-                                    &question_parser2,
-                                    &text,
-                                    confidence,
+                        if utterance.len() >= 1600 {
+                            if let Some(packed) = optimizer.push_utterance(
+                                &utterance,
+                                MIN_SEND_SAMPLES,
+                                Duration::from_millis(MERGE_WINDOW_MS),
+                                Duration::from_millis(MIN_REQUEST_GAP_MS),
+                            ) {
+                                submit_audio_job(
+                                    app.clone(),
+                                    Arc::clone(&capture_engine),
+                                    Arc::clone(&state_manager),
+                                    Arc::clone(&speaker_tracker),
+                                    Arc::clone(&transcription_service),
+                                    Arc::clone(&question_parser),
+                                    Arc::clone(&inflight_stt),
+                                    packed,
                                     source,
                                     source_label,
-                                    &utterance,
-                                )
-                                .await;
-                                inflight2.fetch_sub(1, Ordering::Relaxed);
-                            });
+                                    max_final_inflight,
+                                );
+                            }
                         }
                     }
                 }
             }
         }
+    });
+}
+
+fn submit_audio_job(
+    app: AppHandle,
+    capture_engine: Arc<CaptureEngine>,
+    state_manager: Arc<ConversationStateManager>,
+    speaker_tracker: Arc<SpeakerTracker>,
+    transcription_service: Arc<GeminiTranscriptionService>,
+    question_parser: Arc<QuestionParser>,
+    inflight_stt: Arc<AtomicUsize>,
+    samples: Vec<f32>,
+    source: AudioSource,
+    source_label: &str,
+    max_final_inflight: usize,
+) {
+    if samples.len() < 1600 {
+        return;
+    }
+    if inflight_stt.load(Ordering::Relaxed) >= max_final_inflight {
+        println!("[CHUNK OPT] Dropping clip — inflight STT saturated");
+        return;
+    }
+
+    inflight_stt.fetch_add(1, Ordering::Relaxed);
+    let app2 = app;
+    let capture_engine2 = capture_engine;
+    let state_manager2 = state_manager;
+    let speaker_tracker2 = speaker_tracker;
+    let transcription_service2 = transcription_service;
+    let question_parser2 = question_parser;
+    let inflight2 = inflight_stt;
+    let source_label = source_label.to_string();
+
+    tokio::spawn(async move {
+        if source == AudioSource::SystemLoopback && state_manager2.is_ai_generating() {
+            inflight2.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
+
+        let speaker_id = if source == AudioSource::Microphone {
+            "You".to_string()
+        } else {
+            speaker_tracker2.identify_speaker(&samples, 16000)
+        };
+        let prev = state_manager2.get_history(2);
+
+        let t0 = perf_metrics::now();
+        let result = transcription_service2
+            .transcribe(&samples, &source_label, &speaker_id, &prev)
+            .await;
+        perf_metrics::log_stage("gemini_audio_pipeline", &source_label, t0);
+
+        match result {
+            Ok((text, confidence)) => {
+                if text.trim().is_empty() {
+                    inflight2.fetch_sub(1, Ordering::Relaxed);
+                    return;
+                }
+
+                if let Some(last) = state_manager2.get_history(1).last() {
+                    let a = last.text.trim().to_lowercase();
+                    let b = text.trim().to_lowercase();
+                    if a == b {
+                        println!("[CHUNK OPT] Skipping duplicate transcript");
+                        inflight2.fetch_sub(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
+
+                finalize::finalize_transcript(
+                    &app2,
+                    &capture_engine2,
+                    &state_manager2,
+                    &speaker_tracker2,
+                    &question_parser2,
+                    &text,
+                    confidence,
+                    source,
+                    &source_label,
+                    &samples,
+                )
+                .await;
+            }
+            Err(e) => eprintln!("[Gemini Audio] {}", e),
+        }
+        inflight2.fetch_sub(1, Ordering::Relaxed);
     });
 }

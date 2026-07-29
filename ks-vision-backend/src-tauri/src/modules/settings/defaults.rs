@@ -19,8 +19,7 @@ pub fn get_default_settings() -> &'static str {
         "voice": {
             "inputDevice": "default",
             "pushToTalkShortcut": "Space",
-            "silenceTimeout": 2000,
-            "whisperModel": "base"
+            "silenceTimeout": 2000
         },
         "screenshot": {
             "defaultCaptureMode": "region",

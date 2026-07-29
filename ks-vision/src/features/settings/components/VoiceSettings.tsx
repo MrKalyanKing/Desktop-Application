@@ -30,8 +30,7 @@ export const VoiceSettingsView: React.FC<SubProps> = ({ preferences, onChange })
         </select>
       </div>
 
-      <div className="grid grid-cols-2 gap-1.5">
-        <div className="flex flex-col gap-0.5">
+      <div className="flex flex-col gap-0.5">
           <label className="text-slate-400 font-bold">Silence Timeout (ms)</label>
           <input
             type="number"
@@ -40,19 +39,6 @@ export const VoiceSettingsView: React.FC<SubProps> = ({ preferences, onChange })
             className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 min-w-0"
           />
         </div>
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Whisper Model</label>
-          <select
-            value={preferences.voice.whisperModel}
-            onChange={(e) => updateVoice('whisperModel', e.target.value)}
-            className="bg-slate-950/80 border border-slate-800/60 rounded px-1.5 py-0.5 text-slate-200 outline-none cursor-pointer"
-          >
-            <option value="tiny">Tiny (Fastest)</option>
-            <option value="base">Base (Balanced)</option>
-            <option value="small">Small (Accurate)</option>
-          </select>
-        </div>
-      </div>
 
       <div className="flex flex-col gap-0.5">
         <label className="text-slate-400 font-bold">PTT Shortcut</label>

@@ -1,9 +1,9 @@
-//! Transcription facade: LOCAL Whisper only → cleaned TEXT.
-//! Gemini never receives WAV/PCM/base64 audio from this path.
+//! Transcription facade: Gemini multimodal audio → cleaned TEXT.
+//! No local Whisper / HTTP :8080 / CLI.
 
 use serde::{Deserialize, Serialize};
 use crate::modules::audio::preprocess;
-use super::whisper_engine::WhisperEngine;
+use super::gemini_audio;
 use super::postprocess;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -13,20 +13,14 @@ pub struct TranscriptChunk {
     pub timestamp: u64,
 }
 
-/// Kept name for compatibility with AudioState wiring.
-pub struct GeminiTranscriptionService {
-    whisper: WhisperEngine,
-}
+pub struct GeminiTranscriptionService;
 
 impl GeminiTranscriptionService {
     pub fn new() -> Self {
-        Self {
-            whisper: WhisperEngine::new(),
-        }
+        Self
     }
 
-    /// Speech → local Whisper → postprocess → (text, confidence).
-    /// Never uploads audio to Gemini.
+    /// Speech → Gemini multimodal audio → postprocess → (text, confidence).
     pub async fn transcribe(
         &self,
         samples: &[f32],
@@ -36,7 +30,7 @@ impl GeminiTranscriptionService {
     ) -> Result<(String, f32), String> {
         println!("\n[TRANSCRIBE] ==================================================");
         println!(
-            "[TRANSCRIBE] source={} speaker={} samples={}",
+            "[TRANSCRIBE] source={} speaker={} samples={} (Gemini multimodal)",
             source_label,
             speaker_id,
             samples.len()
@@ -49,26 +43,23 @@ impl GeminiTranscriptionService {
             return Ok((String::new(), 0.0));
         }
 
-        let max_samples = 20 * 16000;
-        let prepared = if prepared.len() > max_samples {
-            prepared[prepared.len() - max_samples..].to_vec()
-        } else {
-            prepared
-        };
+        println!(
+            "[VAD] Speech segment ready ({:.2}s)",
+            prepared.len() as f32 / 16000.0
+        );
+        println!("[Gemini Audio] Transcribing (no Whisper)...");
 
-        println!("[VAD] Speech segment ready ({:.2}s)", prepared.len() as f32 / 16000.0);
-        println!("[Whisper] Transcribing...");
-
-        let result = self.whisper.transcribe(&prepared, 16000).await?;
+        let result = gemini_audio::transcribe_audio(&prepared, 16000).await?;
 
         if result.text.trim().is_empty() {
-            println!("[Whisper] Empty transcript");
+            println!("[Gemini Audio] Empty transcript");
             println!("[TRANSCRIBE] ==================================================\n");
             return Ok((String::new(), 0.0));
         }
 
         let mut ctx = String::new();
-        for chunk in previous_context.iter().take(3) {
+        let recent: Vec<&TranscriptChunk> = previous_context.iter().rev().take(2).collect();
+        for chunk in recent.into_iter().rev() {
             ctx.push_str(&chunk.text);
             ctx.push(' ');
         }
@@ -80,12 +71,10 @@ impl GeminiTranscriptionService {
             calculate_confidence(&cleaned, prepared.len() as f32 / 16000.0)
         };
 
-        println!("[Whisper] Confidence: {:.2}", confidence);
-        println!("[Transcript] Updated: {}", cleaned);
-        println!("[Gemini] Sending text only — NEVER audio");
+        println!("[Gemini Audio] Confidence: {:.2}", confidence);
+        println!("[Transcript] {}", cleaned);
         println!("[TRANSCRIBE] ==================================================\n");
 
-        // Silence / no-speech markers
         let lower = cleaned.to_lowercase();
         if lower.is_empty() || lower == "(silence)" || lower == "silence" {
             return Ok((String::new(), 0.0));

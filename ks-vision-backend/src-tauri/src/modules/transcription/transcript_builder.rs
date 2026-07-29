@@ -1,4 +1,4 @@
-//! Incremental transcript builder — evolves text while the speaker is still talking.
+//! Incremental transcript helper for UI hypothesis merging (text-only).
 
 #[derive(Debug, Clone, Default)]
 pub struct IncrementalTranscriptBuilder {
@@ -22,15 +22,11 @@ impl IncrementalTranscriptBuilder {
         self.last_partial.clear();
     }
 
-    /// Merge a new Whisper partial into the growing hypothesis.
-    /// Returns the updated transcript if it changed.
     pub fn ingest_partial(&mut self, raw: &str) -> Option<String> {
         let text = raw.trim();
         if text.is_empty() {
             return None;
         }
-
-        // Skip identical repeats from overlapping windows
         if text.eq_ignore_ascii_case(self.last_partial.trim()) {
             return None;
         }
@@ -44,7 +40,6 @@ impl IncrementalTranscriptBuilder {
         Some(self.current.clone())
     }
 
-    /// Finalize after endpoint — prefer longer of current vs final Whisper pass.
     pub fn finalize_with(&mut self, final_text: &str) -> String {
         let final_text = final_text.trim();
         let best = if final_text.len() >= self.current.len() {
@@ -73,15 +68,12 @@ fn merge_hypotheses(prev: &str, next: &str) -> String {
     let prev_l = prev.to_lowercase();
     let next_l = next.to_lowercase();
 
-    // Next supersedes previous (common Whisper rewrite of full window)
     if next_l.starts_with(&prev_l) {
         return next.to_string();
     }
-    // Previous already contains next (stale shorter window)
     if prev_l.starts_with(&next_l) {
         return prev.to_string();
     }
-    // Next is continuation suffix / overlapping rewrite
     if let Some(overlap) = longest_overlap_words(&prev_l, &next_l) {
         if overlap >= 2 {
             let prev_words: Vec<&str> = prev.split_whitespace().collect();
@@ -93,7 +85,6 @@ fn merge_hypotheses(prev: &str, next: &str) -> String {
         }
     }
 
-    // Fallback: append if clearly longer / different
     if next_l.contains(&prev_l) {
         return next.to_string();
     }

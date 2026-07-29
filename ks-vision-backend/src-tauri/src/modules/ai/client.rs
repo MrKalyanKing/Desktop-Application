@@ -70,7 +70,7 @@ fn load_env_file() {
     }
 }
 
-/// Gemini text API client (reasoning / chat only — never STT audio).
+/// Gemini text API client (chat / reasoning). Speech STT uses gemini_audio multimodal separately.
 pub struct GeminiClient {
     client: Client,
 }
