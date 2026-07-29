@@ -13,14 +13,14 @@ use crate::modules::audio::preprocess;
 use crate::modules::transcription::wav::write_wav_to_bytes;
 
 const VOICE_SYSTEM_MIC: &str = "You are an AI Meeting Copilot. The user is speaking to you. \
-Listen carefully to the audio — including technical terms (NestJS, Kubernetes, PostgreSQL, JWT, Docker, Redis, TypeORM, etc.). \
-Answer directly and concisely (under 100 words). \
-If the audio is silence, noise, or not a real question/request, reply with exactly: SKIP";
+Listen carefully to the FULL audio — including technical terms (NestJS, Kubernetes, PostgreSQL, JWT, Docker, Redis, TypeORM, etc.). \
+If you can understand anything actionable (question, request, or statement to respond to), answer concisely under 100 words. \
+Prefer answering over skipping. Only reply with exactly SKIP if the audio is pure silence, pure noise, or completely unintelligible.";
 
 const VOICE_SYSTEM_MEETING: &str = "You are an AI Meeting Copilot listening to another person speaking in a meeting. \
-Listen carefully to their full question — preserve technical vocabulary exactly. \
-If there is a clear question or actionable request, answer it helpfully under 100 words. \
-If there is no actionable question, reply with exactly: SKIP";
+Listen carefully to the FULL clip — preserve technical vocabulary exactly. \
+If there is any clear question, request, or point worth a short helpful reply, answer under 100 words. \
+Prefer answering over skipping. Only reply with exactly SKIP if the audio is silence, noise, or has no intelligible speech.";
 
 const MAX_OUTPUT_TOKENS: u32 = 280;
 const MAX_SAMPLES: usize = 12 * 16000; // 12s cap
@@ -134,8 +134,12 @@ pub async fn answer_from_audio(
     from_system_audio: bool,
 ) -> Result<Option<String>, String> {
     let prepared = preprocess::prepare_for_voice(samples);
-    // One sentence per request — require ~0.6s after trim at minimum.
-    if prepared.len() < 9_600 {
+    // Reject crumbs — short clips cause SKIP and wasted API calls.
+    if prepared.len() < 14_400 {
+        println!(
+            "[API SKIP] too short after trim ({:.2}s) — not calling Gemini",
+            prepared.len() as f32 / sample_rate as f32
+        );
         return Ok(None);
     }
 
@@ -335,9 +339,14 @@ pub async fn answer_from_audio(
         }
 
         if is_skip_reply(&text) {
+            println!(
+                "[API SKIP] model returned SKIP for voice-{} ({:.2}s audio)",
+                request_id, duration_s
+            );
             return Ok(None);
         }
 
+        println!("[API ANSWER] voice-{}: {}", request_id, text);
         return Ok(Some(text));
     }
 

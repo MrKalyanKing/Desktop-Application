@@ -1,103 +1,93 @@
-//! Pack VAD fragments into ONE sentence per Gemini request.
-//! Always flush after the merge window — never leave speech stuck in pending.
+//! Pack VAD fragments into ONE complete utterance per Gemini request.
+//! Resets the merge timer on every new fragment so mid-sentence pauses
+//! don't fire a separate API call (which Gemini then SKIP's).
 
 use std::time::{Duration, Instant};
 
-/// ~0.7s @ 16 kHz
-pub const MIN_UTTERANCE_SAMPLES: usize = 11_200;
-pub const MERGE_WINDOW: Duration = Duration::from_millis(1_500);
-/// Absolute floor to send after waiting (~0.5s)
-const FLUSH_MIN_SAMPLES: usize = 8_000;
+/// ~1.2s @ 16 kHz — don't bother Gemini with shorter crumbs
+pub const MIN_UTTERANCE_SAMPLES: usize = 19_200;
+/// Wait this long after the *last* fragment before sending (end of sentence).
+pub const MERGE_GAP: Duration = Duration::from_millis(1_800);
+/// Hard cap — force send so we never hold forever (~10s)
+const MAX_PENDING_SAMPLES: usize = 160_000;
+/// Absolute floor after waiting (~0.9s)
+const FLUSH_MIN_SAMPLES: usize = 14_400;
 
 pub struct ChunkOptimizer {
     pending: Vec<f32>,
-    pending_started: Option<Instant>,
+    last_fragment_at: Option<Instant>,
 }
 
 impl ChunkOptimizer {
     pub fn new() -> Self {
         Self {
             pending: Vec::new(),
-            pending_started: None,
+            last_fragment_at: None,
         }
     }
 
+    /// Always buffer. Only emit when a real pause after the last fragment
+    /// (or we hit the max length). Never fire on the first short cut alone.
     pub fn push_utterance(&mut self, samples: &[f32]) -> Option<Vec<f32>> {
         if samples.is_empty() || is_mostly_silence(samples) {
             return None;
         }
 
-        // Complete sentence already — send as one request immediately.
-        if samples.len() >= MIN_UTTERANCE_SAMPLES && self.pending.is_empty() {
-            return Some(samples.to_vec());
-        }
-
-        if self.pending.is_empty() {
-            self.pending_started = Some(Instant::now());
-        }
         self.pending.extend_from_slice(samples);
+        self.last_fragment_at = Some(Instant::now());
 
-        if self.pending.len() >= MIN_UTTERANCE_SAMPLES {
+        if self.pending.len() >= MAX_PENDING_SAMPLES {
             return self.take();
         }
-
-        // Timed flush of shorts so we never stall after a few questions.
-        let expired = self
-            .pending_started
-            .map(|t| t.elapsed() >= MERGE_WINDOW)
-            .unwrap_or(false);
-        if expired && self.pending.len() >= FLUSH_MIN_SAMPLES {
-            return self.take();
-        }
-
         None
     }
 
     pub fn flush_pending(&mut self) -> Option<Vec<f32>> {
         if self.pending.len() < FLUSH_MIN_SAMPLES || is_mostly_silence(&self.pending) {
-            self.pending.clear();
-            self.pending_started = None;
+            self.clear();
             return None;
         }
         self.take()
     }
 
     pub fn discard_expired_short(&mut self) {
-        let expired = self
-            .pending_started
-            .map(|t| t.elapsed() >= MERGE_WINDOW)
+        let gap_ok = self
+            .last_fragment_at
+            .map(|t| t.elapsed() >= MERGE_GAP)
             .unwrap_or(false);
-        if expired && self.pending.len() < FLUSH_MIN_SAMPLES {
-            self.pending.clear();
-            self.pending_started = None;
+        if gap_ok && self.pending.len() < FLUSH_MIN_SAMPLES {
+            self.clear();
         }
     }
 
     pub fn flush_if_ready(&mut self) -> Option<Vec<f32>> {
-        let expired = self
-            .pending_started
-            .map(|t| t.elapsed() >= MERGE_WINDOW)
+        let gap_ok = self
+            .last_fragment_at
+            .map(|t| t.elapsed() >= MERGE_GAP)
             .unwrap_or(false);
-        if !expired {
+        if !gap_ok {
             return None;
         }
         if self.pending.len() >= FLUSH_MIN_SAMPLES && !is_mostly_silence(&self.pending) {
             return self.take();
         }
-        // Clear stuck crumbs so future sentences aren't blocked.
-        self.pending.clear();
-        self.pending_started = None;
+        self.clear();
         None
     }
 
     fn take(&mut self) -> Option<Vec<f32>> {
         let buf = std::mem::take(&mut self.pending);
-        self.pending_started = None;
+        self.last_fragment_at = None;
         if buf.is_empty() || is_mostly_silence(&buf) {
             None
         } else {
             Some(buf)
         }
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+        self.last_fragment_at = None;
     }
 }
 
