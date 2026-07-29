@@ -121,8 +121,9 @@ impl VADEngine {
         let mut next_state = current_state;
         let mut trigger_boundary = false;
 
-        // Force-cut long continuous speech into streaming windows for low-latency STT
-        let max_speech_ms: u32 = if system { 8_000 } else { 10_000 };
+        // Safety cap only — do NOT stream mid-sentence partials for billing/latency.
+        // Prefer natural silence endpointing for complete utterances.
+        let max_speech_ms: u32 = if system { 20_000 } else { 25_000 };
 
         match current_state {
             VadState::Silent => {
@@ -143,7 +144,6 @@ impl VADEngine {
 
                 if is_frame_speech {
                     self.silence_duration_ms.store(0, Ordering::Relaxed);
-                    // Slow noise floor adaptation during speech (system beds)
                     if system {
                         let alpha = 0.01;
                         let updated = (1.0 - alpha) * current_noise_floor + alpha * (rms * 0.3);
@@ -163,6 +163,7 @@ impl VADEngine {
             }
             VadState::Holding => {
                 if is_frame_speech {
+                    // User resumed — still same utterance; do not fire API.
                     next_state = VadState::Speech;
                     self.silence_duration_ms.store(0, Ordering::Relaxed);
                 } else {
@@ -171,13 +172,13 @@ impl VADEngine {
                     self.silence_duration_ms.store(new_silence, Ordering::Relaxed);
 
                     let is_question_incomplete = is_pitch_rising(recent_speech_samples, 16000);
-                    // Ultra-low endpoint latency while avoiding premature cuts
+                    // Wait for a real end-of-sentence pause (not mid-phrase breaths).
                     let timeout_ms = if system {
-                        if is_question_incomplete { 700 } else { 380 }
+                        if is_question_incomplete { 1_200 } else { 900 }
                     } else if is_question_incomplete {
-                        650
+                        1_400
                     } else {
-                        350
+                        1_100
                     };
 
                     if new_silence >= timeout_ms {

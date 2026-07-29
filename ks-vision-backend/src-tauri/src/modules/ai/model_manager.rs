@@ -90,8 +90,8 @@ impl GeminiModelManager {
                     true
                 }
             });
-            for model in restored {
-                println!("[MODEL MANAGER] Restored (cooldown expired): {}", model);
+            for _model in restored {
+                // quiet — cooldown restore is not an API event
             }
         }
     }
@@ -131,14 +131,7 @@ impl GeminiModelManager {
                 && !blacklisted.contains_key(pref)
                 && list.iter().any(|m| m == pref)
             {
-                println!("[MODEL MANAGER] Selected preferred model: {}", pref);
                 return Some(pref.to_string());
-            }
-            if !pref.is_empty() && blacklisted.contains_key(pref) {
-                println!(
-                    "[MODEL MANAGER] Preferred '{}' is blacklisted — picking next available",
-                    pref
-                );
             }
         }
 
@@ -154,10 +147,6 @@ impl GeminiModelManager {
         // All remaining candidates blacklisted — try any untried anyway (last resort).
         for model in list {
             if !tried.contains(model) {
-                println!(
-                    "[MODEL MANAGER] All available blacklisted — last-resort try: {}",
-                    model
-                );
                 return Some(model.clone());
             }
         }
@@ -166,12 +155,7 @@ impl GeminiModelManager {
     }
 
     pub fn log_switch(&self, from: &str, to: &str, reason: &str) {
-        println!("[MODEL MANAGER] ========================================");
-        println!("[MODEL MANAGER] SWITCHING MODEL");
-        println!("[MODEL MANAGER]    FROM : {}", from);
-        println!("[MODEL MANAGER]    TO   : {}", to);
-        println!("[MODEL MANAGER]    WHY  : {}", reason);
-        println!("[MODEL MANAGER] ========================================");
+        println!("[API FALLBACK] {} → {} ({})", from, to, reason);
     }
 
     pub fn blacklist_model(&self, model: &str, reason: &str, retry_after: Option<Duration>) {
@@ -210,16 +194,10 @@ impl GeminiModelManager {
             );
         }
 
-        let short_reason = if reason.len() > 160 {
-            format!("{}…", &reason[..160])
-        } else {
-            reason.to_string()
-        };
         println!(
-            "[MODEL MANAGER] Blacklisted '{}' for {}s — {}",
+            "[API FALLBACK] blacklisted '{}' for {}s",
             model,
-            duration.as_secs(),
-            short_reason
+            duration.as_secs()
         );
     }
 

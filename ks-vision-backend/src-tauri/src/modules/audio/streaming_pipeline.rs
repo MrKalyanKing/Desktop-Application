@@ -1,5 +1,5 @@
 //! Streaming speech worker — NO speech-to-text.
-//! capture → RNNoise → AGC → VAD → optimized chunk → Gemini multimodal ANSWER.
+//! capture → RNNoise → AGC → VAD endpoint → one complete utterance → one Gemini call.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -7,8 +7,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
-use crate::modules::audio::chunk_optimizer::ChunkOptimizer;
-use crate::modules::audio::perf_metrics;
+use crate::modules::audio::chunk_optimizer::{
+    ChunkOptimizer, MIN_UTTERANCE_SAMPLES,
+};
 use crate::modules::audio::rnnoise_processor::RnnoiseProcessor;
 use crate::modules::audio::streaming_agc::StreamingAgc;
 use crate::modules::audio::vad_engine::{VadProfile, VadState, VADEngine};
@@ -16,9 +17,6 @@ use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::transcription::gemini_voice;
 
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
-const MIN_SEND_SAMPLES: usize = 11_200;
-const MERGE_WINDOW_MS: u64 = 900;
-const MIN_REQUEST_GAP_MS: u64 = 500;
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
@@ -73,7 +71,8 @@ pub fn spawn_streaming_worker(
         let mut last_state = vad.get_state();
         let mut remnant = Vec::new();
 
-        let max_inflight = if from_system { 2 } else { 1 };
+        // Exactly one Gemini call at a time — prevents overlapping billing.
+        let max_inflight = 1usize;
         let mut interval = tokio::time::interval(Duration::from_millis(20));
 
         loop {
@@ -107,9 +106,8 @@ pub fn spawn_streaming_worker(
                         raw_cursor = guard.len();
                     }
                     if scratch.is_empty() {
-                        if let Some(samples) =
-                            optimizer.flush_if_expired(Duration::from_millis(MERGE_WINDOW_MS))
-                        {
+                        optimizer.discard_expired_short();
+                        if let Some(samples) = optimizer.flush_if_ready() {
                             submit_voice_job(
                                 app.clone(),
                                 Arc::clone(&state_manager),
@@ -123,6 +121,7 @@ pub fn spawn_streaming_worker(
                         continue;
                     }
 
+                    // Never cut / send while user is mid-speech — only buffer.
                     let mut denoised = rnnoise.process_16k(&scratch);
                     agc.process(&mut denoised);
                     clean_buf.extend_from_slice(&denoised);
@@ -196,6 +195,7 @@ pub fn spawn_streaming_worker(
                         }),
                     );
 
+                    // Endpoint only — never while still speaking.
                     if boundary {
                         let start = speech_start
                             .unwrap_or(0)
@@ -222,13 +222,9 @@ pub fn spawn_streaming_worker(
                         speech_start = None;
                         recent_speech.clear();
 
-                        if utterance.len() >= 1600 {
-                            if let Some(packed) = optimizer.push_utterance(
-                                &utterance,
-                                MIN_SEND_SAMPLES,
-                                Duration::from_millis(MERGE_WINDOW_MS),
-                                Duration::from_millis(MIN_REQUEST_GAP_MS),
-                            ) {
+                        // Gate: fragment may be short; optimizer merges or drops (<1s).
+                        if !utterance.is_empty() {
+                            if let Some(packed) = optimizer.push_utterance(&utterance) {
                                 submit_voice_job(
                                     app.clone(),
                                     Arc::clone(&state_manager),
@@ -240,6 +236,8 @@ pub fn spawn_streaming_worker(
                                 );
                             }
                         }
+                    } else {
+                        optimizer.discard_expired_short();
                     }
                 }
             }
@@ -256,11 +254,12 @@ fn submit_voice_job(
     source_label: &str,
     max_inflight: usize,
 ) {
-    if samples.len() < 1600 {
+    // Final hard gate — never bill Gemini for tiny clips.
+    if samples.len() < MIN_UTTERANCE_SAMPLES {
         return;
     }
+    // One in-flight request only (no duplicate concurrent calls).
     if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
-        println!("[VOICE] Dropping clip — Gemini voice saturated");
         return;
     }
 
@@ -273,9 +272,7 @@ fn submit_voice_job(
             return;
         }
 
-        let t0 = perf_metrics::now();
         let result = gemini_voice::answer_from_audio(&samples, 16000, from_system).await;
-        perf_metrics::log_stage("gemini_voice_pipeline", &source_label, t0);
 
         match result {
             Ok(Some(answer)) => {
@@ -296,7 +293,7 @@ fn submit_voice_job(
             }
             Ok(None) => {}
             Err(e) => {
-                eprintln!("[Gemini Voice] {}", e);
+                eprintln!("[API ERROR] {}", e);
                 let _ = app.emit(
                     "voice-gemini-error",
                     serde_json::json!({

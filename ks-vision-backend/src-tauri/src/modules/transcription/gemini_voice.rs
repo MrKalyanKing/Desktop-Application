@@ -1,13 +1,15 @@
 //! Direct Gemini multimodal voice answering — NO speech-to-text stage.
-//! Optimized audio clips only (VAD + silence trim + duration cap).
+//! One complete utterance (≥1s) → one API request.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
 
 use crate::modules::ai::model_manager::GeminiModelManager;
-use crate::modules::audio::perf_metrics;
+use crate::modules::audio::chunk_optimizer::MIN_UTTERANCE_SAMPLES;
 use crate::modules::audio::preprocess;
 use crate::modules::transcription::wav::write_wav_to_bytes;
 
@@ -20,12 +22,25 @@ If there is a clear question or actionable request for the candidate/user, answe
 If there is no actionable question, reply with exactly: SKIP";
 
 const MAX_OUTPUT_TOKENS: u32 = 220;
-const MIN_SAMPLES: usize = 1600;
-const MAX_SAMPLES: usize = 12 * 16000; // 12s — token control
+const MAX_SAMPLES: usize = 12 * 16000; // 12s cap
+
+static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Deserialize)]
 struct GeminiResponse {
     candidates: Option<Vec<GeminiCandidate>>,
+    #[serde(default)]
+    usage_metadata: Option<UsageMetadata>,
+}
+
+#[derive(Deserialize)]
+struct UsageMetadata {
+    #[serde(default, rename = "totalTokenCount")]
+    total_token_count: Option<u32>,
+    #[serde(default, rename = "promptTokenCount")]
+    prompt_token_count: Option<u32>,
+    #[serde(default, rename = "candidatesTokenCount")]
+    candidates_token_count: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -89,19 +104,17 @@ fn is_skip_reply(text: &str) -> bool {
     upper == "SKIP" || (upper.starts_with("SKIP") && t.len() < 12)
 }
 
-/// Send optimized speech audio directly to Gemini for an answer.
-/// Returns None when Gemini replies SKIP / empty (no actionable speech).
+/// Send one complete utterance to Gemini. Returns None for SKIP / too-short / silence.
 pub async fn answer_from_audio(
     samples: &[f32],
     sample_rate: u32,
     from_system_audio: bool,
 ) -> Result<Option<String>, String> {
     let prepared = preprocess::prepare_for_voice(samples);
-    if prepared.len() < MIN_SAMPLES {
+    if prepared.len() < MIN_UTTERANCE_SAMPLES {
         return Ok(None);
     }
 
-    let t0 = perf_metrics::now();
     let api_key = load_api_key();
     if api_key.is_empty() {
         return Err("Gemini API key is not configured.".into());
@@ -113,6 +126,7 @@ pub async fn answer_from_audio(
         prepared.as_slice()
     };
 
+    let duration_s = clipped.len() as f32 / sample_rate as f32;
     let wav = write_wav_to_bytes(clipped, sample_rate);
     let b64 = B64.encode(&wav);
     let system = if from_system_audio {
@@ -121,7 +135,6 @@ pub async fn answer_from_audio(
         VOICE_SYSTEM_MIC
     };
 
-    // REST JSON uses camelCase: inlineData / mimeType (not snake_case).
     let payload = serde_json::json!({
         "systemInstruction": {
             "parts": [{ "text": system }]
@@ -152,33 +165,28 @@ pub async fn answer_from_audio(
     let manager = GeminiModelManager::global();
     let mut tried: HashSet<String> = HashSet::new();
     let mut last_err = String::from("No Gemini voice model available");
+    let request_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
 
     while let Some(model) = manager.next_model(None, &tried, true) {
         tried.insert(model.clone());
-        println!(
-            "[GEMINI VOICE] direct audio→answer model={} samples={:.2}s system={} try={}/{}",
-            model,
-            clipped.len() as f32 / sample_rate as f32,
-            from_system_audio,
-            tried.len(),
-            manager.voice_models_len()
-        );
+
+        println!("[API REQUEST]");
+        println!("Model: {}", model);
+        println!("Audio Duration: {:.2} s", duration_s);
+        println!("Request Id: voice-{}", request_id);
 
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
             model, api_key
         );
 
+        let t0 = Instant::now();
         let resp = match client.post(&url).json(&payload).send().await {
             Ok(r) => r,
             Err(e) => {
-                last_err = format!("Gemini voice network error on {}: {}", model, e);
-                eprintln!("[GEMINI VOICE ERROR] {}", last_err);
-                // Network blips — try next model once, brief soft blacklist
+                last_err = format!("network error on {}: {}", model, e);
+                eprintln!("[API ERROR] {}", last_err);
                 manager.blacklist_model(&model, &last_err, Some(std::time::Duration::from_secs(15)));
-                if let Some(next) = manager.next_model(None, &tried, true) {
-                    manager.log_switch(&model, &next, "network error");
-                }
                 continue;
             }
         };
@@ -186,8 +194,8 @@ pub async fn answer_from_audio(
         let status = resp.status();
         if !status.is_success() {
             let err_text = resp.text().await.unwrap_or_default();
-            last_err = format!("Gemini voice failed on {} ({}): {}", model, status, err_text);
-            eprintln!("[GEMINI VOICE ERROR] {}", last_err);
+            last_err = format!("{} ({}): {}", model, status, err_text);
+            eprintln!("[API ERROR] {}", last_err);
 
             if manager.should_fallback(status, &err_text) {
                 let delay = manager.parse_retry_delay(&err_text);
@@ -206,6 +214,23 @@ pub async fn answer_from_audio(
             .await
             .map_err(|e| format!("Failed to parse Gemini voice JSON: {}", e))?;
 
+        let latency_ms = t0.elapsed().as_millis();
+        let tokens = body
+            .usage_metadata
+            .as_ref()
+            .and_then(|u| u.total_token_count)
+            .unwrap_or(0);
+        let prompt_tokens = body
+            .usage_metadata
+            .as_ref()
+            .and_then(|u| u.prompt_token_count)
+            .unwrap_or(0);
+        let out_tokens = body
+            .usage_metadata
+            .as_ref()
+            .and_then(|u| u.candidates_token_count)
+            .unwrap_or(0);
+
         let text = body
             .candidates
             .and_then(|c| c.into_iter().next())
@@ -217,18 +242,18 @@ pub async fn answer_from_audio(
             .trim()
             .to_string();
 
-        perf_metrics::log_stage("gemini_voice_direct", &model, t0);
+        println!("[API RESPONSE]");
+        println!("Model: {}", model);
+        println!("Latency: {} ms", latency_ms);
+        println!(
+            "Tokens Used: {} (prompt={}, out={})",
+            tokens, prompt_tokens, out_tokens
+        );
 
         if is_skip_reply(&text) {
-            println!("[GEMINI VOICE] SKIP (no actionable speech) model={}", model);
             return Ok(None);
         }
 
-        println!(
-            "[GEMINI VOICE] answer model={} len={}",
-            model,
-            text.len()
-        );
         return Ok(Some(text));
     }
 

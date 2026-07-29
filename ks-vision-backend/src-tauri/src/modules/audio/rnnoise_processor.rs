@@ -29,8 +29,6 @@ impl RnnoiseProcessor {
             return Vec::new();
         }
 
-        let t0 = crate::modules::audio::perf_metrics::now();
-
         // Upsample 16k → 48k
         let up = self.resampler.process(samples_16k, 16000, 48000);
         // Scale to RNNoise's expected i16-ish range
@@ -54,13 +52,7 @@ impl RnnoiseProcessor {
         for s in denoised_48k.iter_mut() {
             *s /= 32768.0;
         }
-        let out = self.resampler.process(&denoised_48k, 48000, 16000);
-
-        // Only emit PERF when this chunk did meaningful work
-        if !out.is_empty() {
-            crate::modules::audio::perf_metrics::log_stage("rnnoise", "audio", t0);
-        }
-        out
+        self.resampler.process(&denoised_48k, 48000, 16000)
     }
 }
 

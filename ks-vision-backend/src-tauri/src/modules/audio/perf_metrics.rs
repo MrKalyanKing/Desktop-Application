@@ -1,4 +1,5 @@
-//! Stage latency metrics for the streaming speech pipeline.
+//! Stage latency helpers — silent by default (voice path logs only API request/response).
+
 use std::time::Instant;
 
 #[inline]
@@ -6,22 +7,9 @@ pub fn now() -> Instant {
     Instant::now()
 }
 
-pub fn log_stage(stage: &str, source: &str, started: Instant) {
-    let ms = started.elapsed().as_secs_f64() * 1000.0;
-    // Avoid flooding logs on the 20ms audio tick; always keep STT/Gemini timings.
-    let hot = matches!(
-        stage,
-        "rnnoise" | "agc" | "vad" | "audio_capture_slice"
-    );
-    if hot && ms < 5.0 {
-        return;
-    }
-    println!(
-        "[PERF] stage={} source={} latency_ms={:.2}",
-        stage, source, ms
-    );
-}
+/// No-op: processing logs were flooding the console every frame.
+#[inline]
+pub fn log_stage(_stage: &str, _source: &str, _started: Instant) {}
 
-pub fn log_stage_ms(stage: &str, source: &str, ms: f64) {
-    println!("[PERF] stage={} source={} latency_ms={:.2}", stage, source, ms);
-}
+#[inline]
+pub fn log_stage_ms(_stage: &str, _source: &str, _ms: f64) {}
