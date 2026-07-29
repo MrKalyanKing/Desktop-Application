@@ -1,11 +1,11 @@
 //! Streaming speech worker.
 //! One spoken sentence → exactly one Gemini API request.
-//! Next sentences queue FIFO until the current request finishes.
+//! Keeps answering forever: local inflight + FIFO queue + never stuck pending.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
@@ -18,14 +18,16 @@ use crate::modules::transcription::gemini_voice;
 
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
 const SPEECH_LEAD_PAD: usize = 6_400;
-/// One sentence minimum (~0.8s) — avoids tiny partial API calls.
-const HARD_MIN_SAMPLES: usize = 12_800;
+const HARD_MIN_SAMPLES: usize = 8_000; // ~0.5s
+const MAX_QUEUE: usize = 12;
+/// If a request hangs longer than this, free the slot so listening continues.
+const JOB_WATCHDOG: Duration = Duration::from_secs(90);
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
     capture_engine: Arc<CaptureEngine>,
     state_manager: Arc<ConversationStateManager>,
-    inflight_voice: Arc<AtomicUsize>,
+    _shared_inflight: Arc<AtomicUsize>,
     source: AudioSource,
 ) {
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -82,8 +84,9 @@ pub fn spawn_streaming_worker(
         let mut last_state = vad.get_state();
         let mut remnant = Vec::new();
 
-        // Exactly ONE Gemini request at a time (one sentence → one API call).
-        // Next sentences wait in FIFO queue — never parallel fragment spam.
+        // Per-worker inflight (NOT shared) so mic/system can't deadlock each other
+        // after a few questions.
+        let inflight = Arc::new(AtomicUsize::new(0));
         let max_inflight = 1usize;
         let pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
@@ -96,7 +99,7 @@ pub fn spawn_streaming_worker(
                         enqueue_or_run(
                             &app,
                             &state_manager,
-                            &inflight_voice,
+                            &inflight,
                             &pending_queue,
                             samples,
                             from_system,
@@ -110,7 +113,7 @@ pub fn spawn_streaming_worker(
                     drain_pending(
                         &app,
                         &state_manager,
-                        &inflight_voice,
+                        &inflight,
                         &pending_queue,
                         from_system,
                         source_label,
@@ -131,11 +134,12 @@ pub fn spawn_streaming_worker(
                         raw_cursor = guard.len();
                     }
                     if scratch.is_empty() {
+                        optimizer.discard_expired_short();
                         if let Some(samples) = optimizer.flush_if_ready() {
                             enqueue_or_run(
                                 &app,
                                 &state_manager,
-                                &inflight_voice,
+                                &inflight,
                                 &pending_queue,
                                 samples,
                                 from_system,
@@ -256,7 +260,7 @@ pub fn spawn_streaming_worker(
                                 enqueue_or_run(
                                     &app,
                                     &state_manager,
-                                    &inflight_voice,
+                                    &inflight,
                                     &pending_queue,
                                     packed,
                                     from_system,
@@ -265,17 +269,20 @@ pub fn spawn_streaming_worker(
                                 );
                             }
                         }
-                    } else if let Some(samples) = optimizer.flush_if_ready() {
-                        enqueue_or_run(
-                            &app,
-                            &state_manager,
-                            &inflight_voice,
-                            &pending_queue,
-                            samples,
-                            from_system,
-                            source_label,
-                            max_inflight,
-                        );
+                    } else {
+                        optimizer.discard_expired_short();
+                        if let Some(samples) = optimizer.flush_if_ready() {
+                            enqueue_or_run(
+                                &app,
+                                &state_manager,
+                                &inflight,
+                                &pending_queue,
+                                samples,
+                                from_system,
+                                source_label,
+                                max_inflight,
+                            );
+                        }
                     }
                 }
             }
@@ -286,7 +293,7 @@ pub fn spawn_streaming_worker(
 fn enqueue_or_run(
     app: &AppHandle,
     state_manager: &Arc<ConversationStateManager>,
-    inflight_voice: &Arc<AtomicUsize>,
+    inflight: &Arc<AtomicUsize>,
     pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
     samples: Vec<f32>,
     from_system: bool,
@@ -297,11 +304,10 @@ fn enqueue_or_run(
         return;
     }
 
-    if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
-        // Queue — never drop (paid continuous answering).
+    if inflight.load(Ordering::Relaxed) >= max_inflight {
         let mut q = pending_queue.lock().unwrap();
-        if q.len() >= 6 {
-            q.pop_front(); // keep newest sentences if extremely backed up
+        if q.len() >= MAX_QUEUE {
+            q.pop_front();
         }
         q.push_back(samples);
         return;
@@ -310,7 +316,7 @@ fn enqueue_or_run(
     spawn_voice_job(
         app.clone(),
         Arc::clone(state_manager),
-        Arc::clone(inflight_voice),
+        Arc::clone(inflight),
         Arc::clone(pending_queue),
         samples,
         from_system,
@@ -322,25 +328,24 @@ fn enqueue_or_run(
 fn drain_pending(
     app: &AppHandle,
     state_manager: &Arc<ConversationStateManager>,
-    inflight_voice: &Arc<AtomicUsize>,
+    inflight: &Arc<AtomicUsize>,
     pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
 ) {
-    loop {
-        if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
-            break;
-        }
-        let next = {
-            let mut q = pending_queue.lock().unwrap();
-            q.pop_front()
-        };
-        let Some(samples) = next else { break };
+    if inflight.load(Ordering::Relaxed) >= max_inflight {
+        return;
+    }
+    let next = {
+        let mut q = pending_queue.lock().unwrap();
+        q.pop_front()
+    };
+    if let Some(samples) = next {
         spawn_voice_job(
             app.clone(),
             Arc::clone(state_manager),
-            Arc::clone(inflight_voice),
+            Arc::clone(inflight),
             Arc::clone(pending_queue),
             samples,
             from_system,
@@ -353,21 +358,37 @@ fn drain_pending(
 fn spawn_voice_job(
     app: AppHandle,
     state_manager: Arc<ConversationStateManager>,
-    inflight_voice: Arc<AtomicUsize>,
+    inflight: Arc<AtomicUsize>,
     pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>>,
     samples: Vec<f32>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
 ) {
-    inflight_voice.fetch_add(1, Ordering::Relaxed);
+    // Avoid double-count races.
+    let prev = inflight.fetch_add(1, Ordering::Relaxed);
+    if prev >= max_inflight {
+        inflight.fetch_sub(1, Ordering::Relaxed);
+        let mut q = pending_queue.lock().unwrap();
+        if q.len() >= MAX_QUEUE {
+            q.pop_front();
+        }
+        q.push_back(samples);
+        return;
+    }
+
     let source_label = source_label.to_string();
 
     tokio::spawn(async move {
-        let result = gemini_voice::answer_from_audio(&samples, 16000, from_system).await;
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            JOB_WATCHDOG,
+            gemini_voice::answer_from_audio(&samples, 16000, from_system),
+        )
+        .await;
 
         match result {
-            Ok(Some(answer)) => {
+            Ok(Ok(Some(answer))) => {
                 if state_manager.is_ai_generating() {
                     state_manager.set_interrupted(true);
                     let _ = app.emit("ai-interrupted", ());
@@ -382,8 +403,8 @@ fn spawn_voice_job(
                 );
                 state_manager.set_ai_generating(false);
             }
-            Ok(None) => {}
-            Err(e) => {
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => {
                 eprintln!("[API ERROR] {}", e);
                 let _ = app.emit(
                     "voice-gemini-error",
@@ -393,30 +414,26 @@ fn spawn_voice_job(
                     }),
                 );
             }
-        }
-
-        inflight_voice.fetch_sub(1, Ordering::Relaxed);
-
-        // Immediately start next queued utterance.
-        loop {
-            if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
-                break;
+            Err(_) => {
+                eprintln!(
+                    "[API ERROR] Gemini voice timed out after {}s — continuing to listen",
+                    started.elapsed().as_secs()
+                );
             }
-            let next = {
-                let mut q = pending_queue.lock().unwrap();
-                q.pop_front()
-            };
-            let Some(samples) = next else { break };
-            spawn_voice_job(
-                app.clone(),
-                Arc::clone(&state_manager),
-                Arc::clone(&inflight_voice),
-                Arc::clone(&pending_queue),
-                samples,
-                from_system,
-                &source_label,
-                max_inflight,
-            );
         }
+
+        // Always free the slot so Q4, Q5, … keep working.
+        let _ = inflight.fetch_sub(1, Ordering::Relaxed);
+
+        // Drain next sentence immediately (tick also drains as backup).
+        drain_pending(
+            &app,
+            &state_manager,
+            &inflight,
+            &pending_queue,
+            from_system,
+            &source_label,
+            max_inflight,
+        );
     });
 }

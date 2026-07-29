@@ -1,11 +1,13 @@
 //! Pack VAD fragments into ONE sentence per Gemini request.
+//! Always flush after the merge window — never leave speech stuck in pending.
 
 use std::time::{Duration, Instant};
 
-/// ~0.8s @ 16 kHz — full short sentence / question.
-pub const MIN_UTTERANCE_SAMPLES: usize = 12_800;
-/// Merge early VAD cuts of the same sentence before sending.
-pub const MERGE_WINDOW: Duration = Duration::from_millis(2_000);
+/// ~0.7s @ 16 kHz
+pub const MIN_UTTERANCE_SAMPLES: usize = 11_200;
+pub const MERGE_WINDOW: Duration = Duration::from_millis(1_500);
+/// Absolute floor to send after waiting (~0.5s)
+const FLUSH_MIN_SAMPLES: usize = 8_000;
 
 pub struct ChunkOptimizer {
     pending: Vec<f32>,
@@ -20,38 +22,31 @@ impl ChunkOptimizer {
         }
     }
 
-    /// Merge short fragments into one sentence; return only when ready for a single API call.
     pub fn push_utterance(&mut self, samples: &[f32]) -> Option<Vec<f32>> {
         if samples.is_empty() || is_mostly_silence(samples) {
             return None;
         }
 
-        // Always coalesce into pending while under merge window — one sentence = one request.
+        // Complete sentence already — send as one request immediately.
+        if samples.len() >= MIN_UTTERANCE_SAMPLES && self.pending.is_empty() {
+            return Some(samples.to_vec());
+        }
+
         if self.pending.is_empty() {
             self.pending_started = Some(Instant::now());
         }
         self.pending.extend_from_slice(samples);
 
-        let long_enough = self.pending.len() >= MIN_UTTERANCE_SAMPLES;
-        let merge_expired = self
+        if self.pending.len() >= MIN_UTTERANCE_SAMPLES {
+            return self.take();
+        }
+
+        // Timed flush of shorts so we never stall after a few questions.
+        let expired = self
             .pending_started
             .map(|t| t.elapsed() >= MERGE_WINDOW)
             .unwrap_or(false);
-
-        // If this fragment alone is already a full sentence and nothing pending before it
-        // was empty except what we just added — send when long enough AND (silence merge done
-        // is handled by VAD). Send immediately when clearly a complete long utterance.
-        if long_enough && samples.len() >= MIN_UTTERANCE_SAMPLES && self.pending.len() == samples.len()
-        {
-            return self.take();
-        }
-
-        // Short pieces: wait for more speech or merge window.
-        if long_enough && merge_expired {
-            return self.take();
-        }
-        if long_enough && samples.len() >= MIN_UTTERANCE_SAMPLES {
-            // Another full utterance arrived while pending had shorts — flush combined.
+        if expired && self.pending.len() >= FLUSH_MIN_SAMPLES {
             return self.take();
         }
 
@@ -59,7 +54,7 @@ impl ChunkOptimizer {
     }
 
     pub fn flush_pending(&mut self) -> Option<Vec<f32>> {
-        if self.pending.len() < 9_600 || is_mostly_silence(&self.pending) {
+        if self.pending.len() < FLUSH_MIN_SAMPLES || is_mostly_silence(&self.pending) {
             self.pending.clear();
             self.pending_started = None;
             return None;
@@ -67,25 +62,32 @@ impl ChunkOptimizer {
         self.take()
     }
 
-    pub fn discard_expired_short(&mut self) {}
+    pub fn discard_expired_short(&mut self) {
+        let expired = self
+            .pending_started
+            .map(|t| t.elapsed() >= MERGE_WINDOW)
+            .unwrap_or(false);
+        if expired && self.pending.len() < FLUSH_MIN_SAMPLES {
+            self.pending.clear();
+            self.pending_started = None;
+        }
+    }
 
     pub fn flush_if_ready(&mut self) -> Option<Vec<f32>> {
         let expired = self
             .pending_started
             .map(|t| t.elapsed() >= MERGE_WINDOW)
             .unwrap_or(false);
-        if !expired || self.pending.is_empty() {
+        if !expired {
             return None;
         }
-        if self.pending.len() < 9_600 || is_mostly_silence(&self.pending) {
-            // Keep waiting a bit more only if extremely short; else clear noise.
-            if self.pending.len() < 4_800 {
-                self.pending.clear();
-                self.pending_started = None;
-            }
-            return None;
+        if self.pending.len() >= FLUSH_MIN_SAMPLES && !is_mostly_silence(&self.pending) {
+            return self.take();
         }
-        self.take()
+        // Clear stuck crumbs so future sentences aren't blocked.
+        self.pending.clear();
+        self.pending_started = None;
+        None
     }
 
     fn take(&mut self) -> Option<Vec<f32>> {
