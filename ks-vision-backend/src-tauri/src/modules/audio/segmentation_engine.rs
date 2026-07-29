@@ -1,4 +1,4 @@
-use crate::modules::audio::vad_engine::{VADEngine, is_pitch_rising, estimate_pitch};
+use crate::modules::audio::vad_engine::{VADEngine, estimate_pitch};
 use crate::modules::audio::capture_engine::AudioSource;
 use crate::modules::audio::speaker_tracker::SpeakerId;
 
