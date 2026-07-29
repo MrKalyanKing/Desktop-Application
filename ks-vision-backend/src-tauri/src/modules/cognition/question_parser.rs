@@ -125,11 +125,17 @@ RULES:
         });
 
         let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
-        let mut attempts = 0;
+        let mut tried = std::collections::HashSet::new();
+        let mut last_err = String::from("No Gemini model available");
 
-        loop {
-            let active_model = manager.select_model();
-            println!("[QUESTION PARSER] Using: {}", active_model);
+        while let Some(active_model) = manager.next_model(None, &tried, false) {
+            tried.insert(active_model.clone());
+            println!(
+                "[QUESTION PARSER] Using: {} (try {}/{})",
+                active_model,
+                tried.len(),
+                manager.models_len()
+            );
 
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -138,39 +144,41 @@ RULES:
 
             let resp = match client.post(&url).json(&payload).send().await {
                 Ok(r) => r,
-                Err(e) => return Err(format!("Failed to send question parsing request: {}", e)),
+                Err(e) => {
+                    last_err = format!("Failed to send question parsing request: {}", e);
+                    manager.blacklist_model(
+                        &active_model,
+                        &last_err,
+                        Some(std::time::Duration::from_secs(15)),
+                    );
+                    continue;
+                }
             };
 
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
-                eprintln!(
-                    "[QUESTION PARSER ERROR] Gemini API returned status {}: {}",
+                last_err = format!(
+                    "Gemini API returned status {}: {}",
                     status_code, err_text
                 );
+                eprintln!("[QUESTION PARSER ERROR] {}", last_err);
 
-                let should_switch = manager.is_quota_error(status_code, &err_text)
-                    || manager.is_model_unavailable(status_code, &err_text);
-                if should_switch {
+                if manager.should_fallback(status_code, &err_text) {
                     let delay = manager.parse_retry_delay(&err_text);
-                    let reason = crate::modules::ai::model_manager::GeminiModelManager::switch_reason(
-                        status_code,
-                        &err_text,
-                    );
+                    let reason =
+                        crate::modules::ai::model_manager::GeminiModelManager::switch_reason(
+                            status_code,
+                            &err_text,
+                        );
                     manager.blacklist_model(&active_model, &err_text, delay);
-
-                    attempts += 1;
-                    if attempts < manager.models_len() {
-                        let next_model = manager.select_model_preferring(None);
+                    if let Some(next_model) = manager.next_model(None, &tried, false) {
                         manager.log_switch(&active_model, &next_model, &reason);
                         continue;
                     }
                 }
 
-                return Err(format!(
-                    "Gemini API returned error status {}: {}",
-                    status_code, err_text
-                ));
+                return Err(last_err);
             }
 
             let gemini_resp: GeminiResponse = resp
@@ -196,5 +204,10 @@ RULES:
 
             return Ok(parsed.questions);
         }
+
+        Err(format!(
+            "All Gemini models exhausted while parsing questions. Last error: {}",
+            last_err
+        ))
     }
 }

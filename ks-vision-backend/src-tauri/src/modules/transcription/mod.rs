@@ -1,5 +1,3 @@
-pub mod gemini_service;
-pub mod embedded_whisper;
-pub mod postprocess;
-pub mod transcript_builder;
-pub mod intent_detector;
+pub mod gemini_voice;
+pub mod wav;
+pub mod types;

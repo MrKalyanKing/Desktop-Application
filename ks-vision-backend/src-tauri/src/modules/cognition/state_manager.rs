@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use crate::modules::audio::speaker_tracker::SpeakerId;
 use crate::modules::cognition::question_parser::SubQuestion;
-use crate::modules::transcription::gemini_service::TranscriptChunk;
+use crate::modules::transcription::types::TranscriptChunk;
 
 pub struct ConversationStateManager {
     pub transcript_history: Mutex<Vec<TranscriptChunk>>,

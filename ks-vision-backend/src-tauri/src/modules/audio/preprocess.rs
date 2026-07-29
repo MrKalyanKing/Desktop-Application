@@ -96,7 +96,7 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
     }
 
     let (Some(f), Some(l)) = (first, last) else {
-        // Entire clip quiet — return empty so STT is skipped
+        // Entire clip quiet — nothing to send
         return Vec::new();
     };
 
@@ -108,9 +108,9 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
     samples[start..end].to_vec()
 }
 
-/// Light trim before Gemini audio STT. Gain/denoise already applied continuously upstream.
-/// Peak normalize is intentionally NOT used as primary AGC anymore.
-pub fn prepare_for_stt(samples: &[f32]) -> Vec<f32> {
+/// Trim speech audio before Gemini multimodal voice answering.
+/// Gain/denoise already applied continuously upstream.
+pub fn prepare_for_voice(samples: &[f32]) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
     }
