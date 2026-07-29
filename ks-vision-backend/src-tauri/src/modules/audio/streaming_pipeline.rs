@@ -1,9 +1,10 @@
-//! Streaming speech worker — NO speech-to-text.
-//! capture → (optional RNNoise) → AGC → VAD endpoint → one utterance → Gemini answer.
-//! Optimized so other speakers (system audio) are not clipped, gated, or dropped.
+//! Streaming speech worker.
+//! One spoken sentence → exactly one Gemini API request.
+//! Next sentences queue FIFO until the current request finishes.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -16,8 +17,9 @@ use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::transcription::gemini_voice;
 
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
-/// Lead-in pad before detected speech start (~400ms @ 16k) so first words survive.
 const SPEECH_LEAD_PAD: usize = 6_400;
+/// One sentence minimum (~0.8s) — avoids tiny partial API calls.
+const HARD_MIN_SAMPLES: usize = 12_800;
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
@@ -59,7 +61,6 @@ pub fn spawn_streaming_worker(
         };
         let from_system = source == AudioSource::SystemLoopback;
 
-        // Meeting/system: skip RNNoise — it damages remote speech consonants.
         let mut rnnoise = if from_system {
             None
         } else {
@@ -81,18 +82,22 @@ pub fn spawn_streaming_worker(
         let mut last_state = vad.get_state();
         let mut remnant = Vec::new();
 
-        // System can have one answering + one queued so continuous Q&A keeps flowing.
-        let max_inflight = if from_system { 2 } else { 1 };
+        // Exactly ONE Gemini request at a time (one sentence → one API call).
+        // Next sentences wait in FIFO queue — never parallel fragment spam.
+        let max_inflight = 1usize;
+        let pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
         let mut interval = tokio::time::interval(Duration::from_millis(20));
 
         loop {
             tokio::select! {
                 _ = &mut stop_rx => {
                     if let Some(samples) = optimizer.flush_pending() {
-                        submit_voice_job(
-                            app.clone(),
-                            Arc::clone(&state_manager),
-                            Arc::clone(&inflight_voice),
+                        enqueue_or_run(
+                            &app,
+                            &state_manager,
+                            &inflight_voice,
+                            &pending_queue,
                             samples,
                             from_system,
                             source_label,
@@ -102,9 +107,18 @@ pub fn spawn_streaming_worker(
                     break;
                 }
                 _ = interval.tick() => {
+                    drain_pending(
+                        &app,
+                        &state_manager,
+                        &inflight_voice,
+                        &pending_queue,
+                        from_system,
+                        source_label,
+                        max_inflight,
+                    );
+
                     {
                         let guard = raw_buffer.lock().unwrap();
-                        // Ring wrapped / cleared — reset cursors safely.
                         if guard.len() < raw_cursor {
                             raw_cursor = 0;
                             clean_buf.clear();
@@ -118,17 +132,16 @@ pub fn spawn_streaming_worker(
                     }
                     if scratch.is_empty() {
                         if let Some(samples) = optimizer.flush_if_ready() {
-                            submit_voice_job(
-                                app.clone(),
-                                Arc::clone(&state_manager),
-                                Arc::clone(&inflight_voice),
+                            enqueue_or_run(
+                                &app,
+                                &state_manager,
+                                &inflight_voice,
+                                &pending_queue,
                                 samples,
                                 from_system,
                                 source_label,
                                 max_inflight,
                             );
-                        } else {
-                            optimizer.discard_expired_short();
                         }
                         continue;
                     }
@@ -161,7 +174,6 @@ pub fn spawn_streaming_worker(
 
                         let (current_state, triggered) = vad.process_frame(&chunk, &recent_speech);
 
-                        // Mark start AFTER process_frame so the first speech frame is included.
                         if matches!(current_state, VadState::Speech | VadState::Holding) {
                             if speech_start.is_none() {
                                 speech_start = Some(abs_pos);
@@ -223,8 +235,6 @@ pub fn spawn_streaming_worker(
                             Vec::new()
                         };
 
-                        // Only discard already-consumed audio from the ring, and
-                        // adjust the cursor by the same amount (never drop unread speech).
                         {
                             let mut guard = raw_buffer.lock().unwrap();
                             let consumed = raw_cursor.min(guard.len());
@@ -243,10 +253,11 @@ pub fn spawn_streaming_worker(
 
                         if !utterance.is_empty() {
                             if let Some(packed) = optimizer.push_utterance(&utterance) {
-                                submit_voice_job(
-                                    app.clone(),
-                                    Arc::clone(&state_manager),
-                                    Arc::clone(&inflight_voice),
+                                enqueue_or_run(
+                                    &app,
+                                    &state_manager,
+                                    &inflight_voice,
+                                    &pending_queue,
                                     packed,
                                     from_system,
                                     source_label,
@@ -255,17 +266,16 @@ pub fn spawn_streaming_worker(
                             }
                         }
                     } else if let Some(samples) = optimizer.flush_if_ready() {
-                        submit_voice_job(
-                            app.clone(),
-                            Arc::clone(&state_manager),
-                            Arc::clone(&inflight_voice),
+                        enqueue_or_run(
+                            &app,
+                            &state_manager,
+                            &inflight_voice,
+                            &pending_queue,
                             samples,
                             from_system,
                             source_label,
                             max_inflight,
                         );
-                    } else {
-                        optimizer.discard_expired_short();
                     }
                 }
             }
@@ -273,30 +283,87 @@ pub fn spawn_streaming_worker(
     });
 }
 
-fn submit_voice_job(
-    app: AppHandle,
-    state_manager: Arc<ConversationStateManager>,
-    inflight_voice: Arc<AtomicUsize>,
+fn enqueue_or_run(
+    app: &AppHandle,
+    state_manager: &Arc<ConversationStateManager>,
+    inflight_voice: &Arc<AtomicUsize>,
+    pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
     samples: Vec<f32>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
 ) {
-    if samples.len() < 9_600 {
-        return;
-    }
-    // Keep listening/answering — if saturated, still accept up to max_inflight.
-    if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
+    if samples.len() < HARD_MIN_SAMPLES {
         return;
     }
 
+    if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
+        // Queue — never drop (paid continuous answering).
+        let mut q = pending_queue.lock().unwrap();
+        if q.len() >= 6 {
+            q.pop_front(); // keep newest sentences if extremely backed up
+        }
+        q.push_back(samples);
+        return;
+    }
+
+    spawn_voice_job(
+        app.clone(),
+        Arc::clone(state_manager),
+        Arc::clone(inflight_voice),
+        Arc::clone(pending_queue),
+        samples,
+        from_system,
+        source_label,
+        max_inflight,
+    );
+}
+
+fn drain_pending(
+    app: &AppHandle,
+    state_manager: &Arc<ConversationStateManager>,
+    inflight_voice: &Arc<AtomicUsize>,
+    pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
+    from_system: bool,
+    source_label: &str,
+    max_inflight: usize,
+) {
+    loop {
+        if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
+            break;
+        }
+        let next = {
+            let mut q = pending_queue.lock().unwrap();
+            q.pop_front()
+        };
+        let Some(samples) = next else { break };
+        spawn_voice_job(
+            app.clone(),
+            Arc::clone(state_manager),
+            Arc::clone(inflight_voice),
+            Arc::clone(pending_queue),
+            samples,
+            from_system,
+            source_label,
+            max_inflight,
+        );
+    }
+}
+
+fn spawn_voice_job(
+    app: AppHandle,
+    state_manager: Arc<ConversationStateManager>,
+    inflight_voice: Arc<AtomicUsize>,
+    pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>>,
+    samples: Vec<f32>,
+    from_system: bool,
+    source_label: &str,
+    max_inflight: usize,
+) {
     inflight_voice.fetch_add(1, Ordering::Relaxed);
     let source_label = source_label.to_string();
 
     tokio::spawn(async move {
-        // Do NOT drop system utterances while answering — queue via inflight instead.
-        let _ = from_system;
-
         let result = gemini_voice::answer_from_audio(&samples, 16000, from_system).await;
 
         match result {
@@ -305,7 +372,6 @@ fn submit_voice_job(
                     state_manager.set_interrupted(true);
                     let _ = app.emit("ai-interrupted", ());
                 }
-
                 state_manager.set_ai_generating(true);
                 let _ = app.emit(
                     "voice-gemini-answer",
@@ -330,5 +396,27 @@ fn submit_voice_job(
         }
 
         inflight_voice.fetch_sub(1, Ordering::Relaxed);
+
+        // Immediately start next queued utterance.
+        loop {
+            if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
+                break;
+            }
+            let next = {
+                let mut q = pending_queue.lock().unwrap();
+                q.pop_front()
+            };
+            let Some(samples) = next else { break };
+            spawn_voice_job(
+                app.clone(),
+                Arc::clone(&state_manager),
+                Arc::clone(&inflight_voice),
+                Arc::clone(&pending_queue),
+                samples,
+                from_system,
+                &source_label,
+                max_inflight,
+            );
+        }
     });
 }

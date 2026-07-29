@@ -171,13 +171,13 @@ impl VADEngine {
                     self.silence_duration_ms.store(new_silence, Ordering::Relaxed);
 
                     let is_question_incomplete = is_pitch_rising(recent_speech_samples, 16000);
-                    // Longer hangover so other speakers' mid-sentence pauses don't cut.
+                    // Wait for end-of-sentence pause so one spoken sentence = one API call.
                     let timeout_ms = if system {
-                        if is_question_incomplete { 1_800 } else { 1_400 }
+                        if is_question_incomplete { 1_200 } else { 950 }
                     } else if is_question_incomplete {
-                        1_500
+                        1_100
                     } else {
-                        1_200
+                        850
                     };
 
                     if new_silence >= timeout_ms {

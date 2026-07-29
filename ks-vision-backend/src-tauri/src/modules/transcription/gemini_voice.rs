@@ -9,7 +9,6 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
 
 use crate::modules::ai::model_manager::{GeminiModelManager, ModelCapability};
-use crate::modules::audio::chunk_optimizer::MIN_UTTERANCE_SAMPLES;
 use crate::modules::audio::preprocess;
 use crate::modules::transcription::wav::write_wav_to_bytes;
 
@@ -135,7 +134,8 @@ pub async fn answer_from_audio(
     from_system_audio: bool,
 ) -> Result<Option<String>, String> {
     let prepared = preprocess::prepare_for_voice(samples);
-    if prepared.len() < MIN_UTTERANCE_SAMPLES {
+    // One sentence per request — require ~0.6s after trim at minimum.
+    if prepared.len() < 9_600 {
         return Ok(None);
     }
 
