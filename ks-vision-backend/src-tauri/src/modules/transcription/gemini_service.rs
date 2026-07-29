@@ -1,9 +1,9 @@
-//! Transcription facade: embedded Whisper (in-process) → cleaned TEXT → Gemini text-only.
-//! No HTTP :8080, no CLI, no Gemini audio for STT.
+//! Transcription facade: Gemini multimodal audio → cleaned TEXT.
+//! No local Whisper / HTTP :8080 / CLI.
 
 use serde::{Deserialize, Serialize};
 use crate::modules::audio::preprocess;
-use super::embedded_whisper;
+use super::gemini_audio;
 use super::postprocess;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -20,8 +20,7 @@ impl GeminiTranscriptionService {
         Self
     }
 
-    /// Speech → embedded Whisper → postprocess → (text, confidence).
-    /// Gemini never receives audio on this path.
+    /// Speech → Gemini multimodal audio → postprocess → (text, confidence).
     pub async fn transcribe(
         &self,
         samples: &[f32],
@@ -31,21 +30,11 @@ impl GeminiTranscriptionService {
     ) -> Result<(String, f32), String> {
         println!("\n[TRANSCRIBE] ==================================================");
         println!(
-            "[TRANSCRIBE] source={} speaker={} samples={} (embedded Whisper)",
+            "[TRANSCRIBE] source={} speaker={} samples={} (Gemini multimodal)",
             source_label,
             speaker_id,
             samples.len()
         );
-
-        if !embedded_whisper::is_ready() {
-            // Best-effort late init (packaged / cwd)
-            let _ = embedded_whisper::init_embedded_whisper(None);
-        }
-        if !embedded_whisper::is_ready() {
-            return Err(
-                "Speech engine not ready. The bundled Whisper model failed to load.".into(),
-            );
-        }
 
         let prepared = preprocess::prepare_for_stt(samples);
         if prepared.len() < 1600 {
@@ -58,12 +47,12 @@ impl GeminiTranscriptionService {
             "[VAD] Speech segment ready ({:.2}s)",
             prepared.len() as f32 / 16000.0
         );
+        println!("[Gemini Audio] Transcribing (no Whisper)...");
 
-        let (text, confidence) =
-            embedded_whisper::transcribe_pcm_async(prepared.clone(), 16000).await?;
+        let result = gemini_audio::transcribe_audio(&prepared, 16000).await?;
 
-        if text.trim().is_empty() {
-            println!("[Embedded Whisper] Empty transcript");
+        if result.text.trim().is_empty() {
+            println!("[Gemini Audio] Empty transcript");
             println!("[TRANSCRIBE] ==================================================\n");
             return Ok((String::new(), 0.0));
         }
@@ -75,16 +64,15 @@ impl GeminiTranscriptionService {
             ctx.push(' ');
         }
 
-        let cleaned = postprocess::postprocess_transcript(&text, &ctx);
-        let confidence = if confidence > 0.0 {
-            confidence
+        let cleaned = postprocess::postprocess_transcript(&result.text, &ctx);
+        let confidence = if result.confidence > 0.0 {
+            result.confidence
         } else {
             calculate_confidence(&cleaned, prepared.len() as f32 / 16000.0)
         };
 
-        println!("[Embedded Whisper] Confidence: {:.2}", confidence);
+        println!("[Gemini Audio] Confidence: {:.2}", confidence);
         println!("[Transcript] {}", cleaned);
-        println!("[Gemini] Text only — never audio");
         println!("[TRANSCRIBE] ==================================================\n");
 
         let lower = cleaned.to_lowercase();
@@ -94,6 +82,39 @@ impl GeminiTranscriptionService {
 
         Ok((cleaned, confidence))
     }
+}
+
+pub fn write_wav_to_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
+    let mut spec = Vec::new();
+
+    spec.extend_from_slice(b"RIFF");
+    let num_samples = samples.len();
+    let data_size = num_samples * 2;
+    let file_size = 36 + data_size;
+    spec.extend_from_slice(&(file_size as u32).to_le_bytes());
+    spec.extend_from_slice(b"WAVE");
+
+    spec.extend_from_slice(b"fmt ");
+    spec.extend_from_slice(&(16u32).to_le_bytes());
+    spec.extend_from_slice(&(1u16).to_le_bytes());
+    spec.extend_from_slice(&(1u16).to_le_bytes());
+    spec.extend_from_slice(&sample_rate.to_le_bytes());
+    let byte_rate: u32 = sample_rate * 1 * 2;
+    spec.extend_from_slice(&byte_rate.to_le_bytes());
+    let block_align: u16 = 1 * 2;
+    spec.extend_from_slice(&block_align.to_le_bytes());
+    spec.extend_from_slice(&(16u16).to_le_bytes());
+
+    spec.extend_from_slice(b"data");
+    spec.extend_from_slice(&(data_size as u32).to_le_bytes());
+
+    for &sample in samples {
+        let clamped = sample.clamp(-1.0, 1.0);
+        let scaled = (clamped * 32767.0) as i16;
+        spec.extend_from_slice(&scaled.to_le_bytes());
+    }
+
+    spec
 }
 
 pub fn calculate_confidence(text: &str, audio_duration_sec: f32) -> f32 {

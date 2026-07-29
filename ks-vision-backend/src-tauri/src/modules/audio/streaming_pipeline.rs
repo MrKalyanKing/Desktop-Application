@@ -1,5 +1,5 @@
-//! Streaming speech worker:
-//! capture → RNNoise → AGC → VAD → optimized chunk → embedded Whisper → intent → Gemini TEXT.
+//! Streaming speech worker (no Whisper):
+//! capture → RNNoise → AGC → VAD → optimized chunk → Gemini multimodal audio → intent → text Gemini.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -318,7 +318,7 @@ fn submit_audio_job(
         let result = transcription_service2
             .transcribe(&samples, &source_label, &speaker_id, &prev)
             .await;
-        perf_metrics::log_stage("embedded_stt_pipeline", &source_label, t0);
+        perf_metrics::log_stage("gemini_audio_pipeline", &source_label, t0);
 
         match result {
             Ok((text, confidence)) => {
