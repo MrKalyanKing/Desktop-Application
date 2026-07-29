@@ -1,11 +1,12 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import type { HealthStatus, ModelsListResponse } from '../types/ai.types';
 
-export const ollamaService = {
+/** Thin IPC wrapper around Tauri Gemini commands. */
+export const geminiService = {
   healthCheck: async (baseUrl?: string): Promise<HealthStatus> => {
     return await invoke<HealthStatus>('ai_health_check', { baseUrl });
   },
-  
+
   getModels: async (baseUrl?: string): Promise<ModelsListResponse> => {
     return await invoke<ModelsListResponse>('ai_get_models', { baseUrl });
   },
@@ -53,5 +54,5 @@ export const ollamaService = {
 
   cancelAI: async (requestId: string): Promise<void> => {
     return await invoke<void>('cancel_ai', { requestId });
-  }
+  },
 };

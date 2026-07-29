@@ -26,7 +26,7 @@ export const useSystemTray = ({
         onCheckStatus();
       });
 
-      unlistenRestart = await listen('restart-ollama', () => {
+      unlistenRestart = await listen('restart-gemini', () => {
         onRestartConnection();
       });
     };

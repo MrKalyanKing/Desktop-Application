@@ -1,6 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
-import type { AIStatusType, ChatMessage, AIError, OllamaModel } from '../types/ai.types';
+import type { AIStatusType, ChatMessage, AIError, AiModel } from '../types/ai.types';
 import { DEFAULT_MODEL, STORAGE_KEYS } from '../constants/ai.constants';
 import { storage } from '../../../shared/utils/storage';
 
@@ -12,7 +12,7 @@ interface AIState {
   lastResponse: string;
   conversationHistory: ChatMessage[];
   sessionHistory: ChatMessage[];
-  modelsList: OllamaModel[];
+  modelsList: AiModel[];
   error: AIError | null;
   activeRequestId: string | null;
   autoCopyClipboard: boolean;
@@ -21,11 +21,7 @@ interface AIState {
 
 const getInitialModel = (): string => {
   const model = storage.get(STORAGE_KEYS.ACTIVE_MODEL, DEFAULT_MODEL) as string;
-  if (model === 'qwen2.5-coder:7b' || model === 'gemini-3.5-flash-lite') {
-    storage.set(STORAGE_KEYS.ACTIVE_MODEL, 'gemini-3.5-flash-lite');
-    return 'gemini-3.5-flash-lite';
-  }
-  return model;
+  return model || DEFAULT_MODEL;
 };
 
 const initialState: AIState = {
@@ -66,7 +62,7 @@ export const aiSlice = createSlice({
     appendLastResponse: (state, action: PayloadAction<string>) => {
       state.lastResponse += action.payload;
     },
-    setModelsList: (state, action: PayloadAction<OllamaModel[]>) => {
+    setModelsList: (state, action: PayloadAction<AiModel[]>) => {
       state.modelsList = action.payload;
     },
     setError: (state, action: PayloadAction<AIError | null>) => {

@@ -31,7 +31,9 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
         >
           {models.length > 0 ? (
             models.map((m: any) => (
-              <option key={m.name} value={m.name}>{m.name}</option>
+              <option key={m.model || m.name} value={m.model || m.name}>
+                {m.name || m.model}
+              </option>
             ))
           ) : (
             <option value={preferences.ai.activeModel}>{preferences.ai.activeModel}</option>

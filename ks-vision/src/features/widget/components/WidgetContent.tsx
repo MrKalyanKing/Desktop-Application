@@ -48,6 +48,9 @@ export const WidgetContent: React.FC = () => {
   } = useScreenshot();
   
   const scrollRef = useRef<HTMLDivElement>(null);
+  const answerStartRef = useRef<HTMLDivElement>(null);
+  const userScrolledAwayRef = useRef(false);
+  const prevLoadingRef = useRef(false);
 
   useSystemTray({
     onOpenSettings: () => setShowSettings(true),
@@ -70,11 +73,34 @@ export const WidgetContent: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  const handleChatScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    userScrolledAwayRef.current = distFromBottom > 64;
+  };
+
+  // When a new answer starts: show the start of that answer once — never chase the end while streaming.
   useEffect(() => {
+    const justStarted = loading && !prevLoadingRef.current;
+    prevLoadingRef.current = loading;
+
+    if (justStarted) {
+      userScrolledAwayRef.current = false;
+      requestAnimationFrame(() => {
+        answerStartRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+      return;
+    }
+
+    // Do not auto-jump during token streaming (`response` updates).
+    if (streaming || loading) return;
+    if (userScrolledAwayRef.current) return;
+
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [response, conversationHistory, sessionHistory, loading, error, screenshotStep, screenshotError, isRecording, isTranscribing, viewMode]);
+  }, [conversationHistory, sessionHistory, loading, streaming, error, screenshotStep, screenshotError, viewMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -250,6 +276,7 @@ export const WidgetContent: React.FC = () => {
               {/* Scroll Container showing Database Logs */}
               <div 
                 ref={scrollRef}
+                onScroll={handleChatScroll}
                 className="flex-1 overflow-y-auto px-1.5 py-1 bg-slate-950/40 border border-slate-800/40 rounded-lg text-xs leading-relaxed text-slate-300 font-medium select-text"
               >
                 {filteredHistory.length === 0 && (
@@ -294,6 +321,7 @@ export const WidgetContent: React.FC = () => {
               {/* Chat Scroll Container showing Session messages */}
               <div 
                 ref={scrollRef}
+                onScroll={handleChatScroll}
                 className="flex-1 overflow-y-auto px-1.5 py-1 bg-slate-950/40 border border-slate-800/40 rounded-lg text-xs leading-relaxed text-slate-300 font-medium select-text"
               >
                 <CapturePreview />
@@ -372,13 +400,13 @@ export const WidgetContent: React.FC = () => {
                 ))}
                 
                 {loading && response.length === 0 && !error && !screenshotError && (
-                  <div className="flex items-center justify-center py-2 select-none animate-pulse">
+                  <div ref={answerStartRef} className="flex items-center justify-center py-2 select-none animate-pulse">
                     <AIThinking />
                   </div>
                 )}
                 
                 {streaming && response && (
-                  <div className="mb-2 p-1.5 bg-cyan-950/10 border border-cyan-900/20 rounded-md select-text">
+                  <div ref={answerStartRef} className="mb-2 p-1.5 bg-cyan-950/10 border border-cyan-900/20 rounded-md select-text">
                     <div className="text-[7.5px] font-bold text-cyan-400 mb-0.5 select-none">
                       COPAILOT (streaming...)
                     </div>
@@ -423,7 +451,11 @@ export const WidgetContent: React.FC = () => {
                 ? 'bg-red-950 border-red-800/40 text-red-400 animate-pulse' 
                 : 'bg-slate-950/40 border-slate-800/40 text-slate-400 hover:text-cyan-450 hover:border-cyan-800/40'
             }`}
-            title={isRecording ? 'Pause continuous listening' : 'Resume continuous listening (mic + system)'}
+            title={
+              isRecording
+                ? 'Stop voice listening'
+                : `Start voice listening (${captureMode})`
+            }
           >
             🎤
           </button>

@@ -5,7 +5,7 @@ use tauri::State;
 use crate::modules::ai::health::HealthStatus;
 use crate::modules::ai::models::{ModelsListResponse, GenerateOptions};
 use crate::modules::ai::errors::AiError;
-use crate::modules::ai::client::OllamaClient;
+use crate::modules::ai::client::GeminiClient;
 
 pub struct AiState {
     pub active_generations: Mutex<HashMap<String, CancellationToken>>,
@@ -21,13 +21,13 @@ impl AiState {
 
 #[tauri::command]
 pub async fn ai_health_check(base_url: Option<String>) -> HealthStatus {
-    let client = OllamaClient::new(base_url);
+    let client = GeminiClient::new(base_url);
     client.check_health().await
 }
 
 #[tauri::command]
 pub async fn ai_get_models(base_url: Option<String>) -> Result<ModelsListResponse, AiError> {
-    let client = OllamaClient::new(base_url);
+    let client = GeminiClient::new(base_url);
     client.list_models().await
 }
 
@@ -42,13 +42,13 @@ pub async fn ask_ai(
     state: State<'_, AiState>,
 ) -> Result<String, AiError> {
     let token = CancellationToken::new();
-    
+
     {
         let mut active = state.active_generations.lock().unwrap();
         active.insert(request_id.clone(), token.clone());
     }
 
-    let client = OllamaClient::new(base_url);
+    let client = GeminiClient::new(base_url);
     let result = client.generate(&model, &prompt, system, options, token).await;
 
     {
@@ -71,14 +71,16 @@ pub async fn stream_ai(
     state: State<'_, AiState>,
 ) -> Result<(), AiError> {
     let token = CancellationToken::new();
-    
+
     {
         let mut active = state.active_generations.lock().unwrap();
         active.insert(request_id.clone(), token.clone());
     }
 
-    let client = OllamaClient::new(base_url);
-    let result = client.generate_stream(&model, &prompt, system, options, channel, token).await;
+    let client = GeminiClient::new(base_url);
+    let result = client
+        .generate_stream(&model, &prompt, system, options, channel, token)
+        .await;
 
     {
         let mut active = state.active_generations.lock().unwrap();
@@ -97,39 +99,4 @@ pub fn cancel_ai(request_id: String, state: State<'_, AiState>) -> Result<(), St
     } else {
         Err("Request ID not active or already finished".to_string())
     }
-}
-
-#[tauri::command]
-pub fn db_save_message_cmd(app: tauri::AppHandle, role: String, content: String, source: String) -> Result<(), String> {
-    crate::modules::database::history::save_message(&app, &role, &content, &source)
-}
-
-#[tauri::command]
-pub fn db_load_history_cmd(app: tauri::AppHandle, limit: u32) -> Result<Vec<crate::modules::database::history::MessageRecord>, String> {
-    crate::modules::database::history::load_history(&app, limit)
-}
-
-#[tauri::command]
-pub fn db_clear_history_cmd(app: tauri::AppHandle) -> Result<(), String> {
-    crate::modules::database::history::clear_history(&app)
-}
-
-#[tauri::command]
-pub fn db_delete_message_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
-    crate::modules::database::history::delete_message(&app, id)
-}
-
-#[tauri::command]
-pub fn db_search_history_cmd(app: tauri::AppHandle, query: String) -> Result<Vec<crate::modules::database::history::MessageRecord>, String> {
-    crate::modules::database::history::search_history(&app, &query)
-}
-
-#[tauri::command]
-pub fn db_export_markdown_cmd(app: tauri::AppHandle) -> Result<String, String> {
-    crate::modules::database::history::export_markdown(&app)
-}
-
-#[tauri::command]
-pub fn db_export_json_cmd(app: tauri::AppHandle) -> Result<String, String> {
-    crate::modules::database::history::export_json(&app)
 }

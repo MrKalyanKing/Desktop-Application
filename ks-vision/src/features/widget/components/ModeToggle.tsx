@@ -32,9 +32,9 @@ export const ModeToggle: React.FC<ModeToggleProps> = ({ mode, onChange, disabled
         {btn('system', '🔊 System', 'Listen to Meet / Teams / YouTube only')}
       </div>
       <div className="text-[8px] text-slate-500 px-0.5 truncate">
-        {mode === 'both' && 'Active: mic + system (dual)'}
-        {mode === 'mic' && 'Active: your microphone only'}
-        {mode === 'system' && 'Active: system audio only'}
+        {mode === 'both' && 'Selected: mic + system'}
+        {mode === 'mic' && 'Selected: your microphone'}
+        {mode === 'system' && 'Selected: system audio'}
       </div>
     </div>
   );

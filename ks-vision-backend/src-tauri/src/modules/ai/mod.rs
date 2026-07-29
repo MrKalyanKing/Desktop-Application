@@ -1,6 +1,5 @@
 pub mod errors;
 pub mod models;
-pub mod response;
 pub mod health;
 pub mod prompt;
 pub mod client;

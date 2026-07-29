@@ -1,13 +1,13 @@
-import { ollamaService } from './ollama.service';
+import { geminiService } from './gemini.service';
 import type { HealthStatus, ModelsListResponse, AIError } from '../types/ai.types';
 
 export const aiService = {
   checkAvailability: async (url?: string): Promise<HealthStatus> => {
-    return await ollamaService.healthCheck(url);
+    return await geminiService.healthCheck(url);
   },
 
   fetchModels: async (url?: string): Promise<ModelsListResponse> => {
-    return await ollamaService.getModels(url);
+    return await geminiService.getModels(url);
   },
 
   ask: async (
@@ -19,7 +19,7 @@ export const aiService = {
     url?: string
   ): Promise<string> => {
     try {
-      return await ollamaService.askAI(requestId, model, prompt, system, options, url);
+      return await geminiService.askAI(requestId, model, prompt, system, options, url);
     } catch (err: any) {
       throw aiService.mapError(err);
     }
@@ -35,7 +35,7 @@ export const aiService = {
     onChunk: (chunk: string) => void
   ): Promise<void> => {
     try {
-      await ollamaService.streamAI(requestId, model, prompt, system, options, url, onChunk);
+      await geminiService.streamAI(requestId, model, prompt, system, options, url, onChunk);
     } catch (err: any) {
       throw aiService.mapError(err);
     }
@@ -43,35 +43,42 @@ export const aiService = {
 
   cancel: async (requestId: string): Promise<void> => {
     try {
-      await ollamaService.cancelAI(requestId);
+      await geminiService.cancelAI(requestId);
     } catch (err: any) {
       console.error('Failed to cancel running generation request:', err);
     }
   },
 
   mapError: (error: any): AIError => {
-    const msg = typeof error === 'string' ? error : (error.message || JSON.stringify(error));
-    if (msg.includes('unavailable') || msg.includes('Connection failed')) {
-      return { 
-        type: 'SERVER_UNAVAILABLE', 
-        message: 'Ollama server is not running or was not found at this endpoint. Please make sure Ollama is active.' 
+    const msg = typeof error === 'string' ? error : error.message || JSON.stringify(error);
+    if (
+      msg.includes('unavailable') ||
+      msg.includes('Connection failed') ||
+      msg.includes('API Key is not set') ||
+      msg.includes('API key is missing')
+    ) {
+      return {
+        type: 'SERVER_UNAVAILABLE',
+        message:
+          'Gemini API is not configured. Add GEMINI_API_KEY to your .env file and restart the app.',
       };
     }
-    if (msg.includes('not found') || msg.includes('ModelNotFound')) {
-      return { 
-        type: 'MODEL_NOT_FOUND', 
-        message: 'The requested model is missing. Run "ollama pull <model>" in your shell first.' 
+    if (msg.includes('not found') || msg.includes('ModelNotFound') || msg.includes('Failed to switch model')) {
+      return {
+        type: 'MODEL_NOT_FOUND',
+        message:
+          'Gemini model unavailable or exhausted. Try another model in Settings, or wait for quota reset.',
       };
     }
     if (msg.includes('cancelled') || msg.includes('RequestCancelled')) {
-      return { 
-        type: 'REQUEST_CANCELLED', 
-        message: 'AI request generation cancelled.' 
+      return {
+        type: 'REQUEST_CANCELLED',
+        message: 'AI request generation cancelled.',
       };
     }
-    return { 
-      type: 'GENERAL_ERROR', 
-      message: msg 
+    return {
+      type: 'GENERAL_ERROR',
+      message: msg,
     };
-  }
+  },
 };

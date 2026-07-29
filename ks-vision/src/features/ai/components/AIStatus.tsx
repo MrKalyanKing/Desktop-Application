@@ -25,8 +25,8 @@ export const AIStatus: React.FC = () => {
         status === 'connected' ? 'text-emerald-400/90' :
         status === 'error' ? 'text-rose-400/90' : 'text-slate-500'
       }>
-        {status === 'connected' ? 'OLLAMA ONLINE' :
-         status === 'error' ? 'OLLAMA ERROR' : 'OLLAMA OFFLINE'}
+        {status === 'connected' ? 'GEMINI ONLINE' :
+         status === 'error' ? 'GEMINI ERROR' : 'GEMINI OFFLINE'}
       </span>
     </div>
   );

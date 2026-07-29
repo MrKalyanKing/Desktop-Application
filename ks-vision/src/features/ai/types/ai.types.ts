@@ -1,6 +1,6 @@
 export type AIStatusType = 'disconnected' | 'connected' | 'error';
 
-export interface OllamaModel {
+export interface AiModel {
   name: string;
   model: string;
   size: number;
@@ -8,7 +8,7 @@ export interface OllamaModel {
 }
 
 export type ModelsListResponse = {
-  models: OllamaModel[];
+  models: AiModel[];
 };
 
 export interface HealthStatus {

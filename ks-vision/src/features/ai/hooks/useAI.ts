@@ -118,38 +118,35 @@ export const useAI = () => {
     if (!isAvailable) {
       const err: AIError = {
         type: 'SERVER_UNAVAILABLE',
-        message: 'Ollama is not running. Please make sure the Ollama desktop app is active.'
+        message:
+          'Gemini API is not configured. Add GEMINI_API_KEY to your .env file and restart the app.',
       };
       dispatch(setError(err));
       dispatch(setStatus('disconnected'));
       return false;
     }
 
-    const installedModels = await getModels();
-    if (installedModels.length === 0) {
+    const availableModels = await getModels();
+    if (availableModels.length === 0) {
       const err: AIError = {
         type: 'MODEL_NOT_FOUND',
-        message: 'No models installed in Ollama. Pull a model (e.g. "ollama pull llama3") first.'
+        message: 'No Gemini models available. Check your API key and network connection.',
       };
       dispatch(setError(err));
       return false;
     }
 
     const targetModel = currentModel.toLowerCase();
-    const modelExists = installedModels.some(m => {
+    const modelExists = availableModels.some((m) => {
       const name = m.name.toLowerCase();
       const model = m.model.toLowerCase();
-      return name === targetModel || 
-             model === targetModel || 
-             name.startsWith(targetModel + ':') || 
-             targetModel.startsWith(name + ':') ||
-             name.split(':')[0] === targetModel.split(':')[0];
+      return name === targetModel || model === targetModel;
     });
 
     if (!modelExists) {
       const err: AIError = {
         type: 'MODEL_NOT_FOUND',
-        message: `Model '${currentModel}' is not pulled. Run 'ollama pull ${currentModel}' in your terminal.`
+        message: `Model '${currentModel}' is not available. Pick another Gemini model in Settings.`,
       };
       dispatch(setError(err));
       return false;

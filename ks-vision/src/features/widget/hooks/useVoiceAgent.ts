@@ -6,18 +6,16 @@ import { useAI } from '../../ai';
 export type CaptureMode = 'mic' | 'system' | 'both';
 
 /**
- * Continuous listening with selectable source:
- * - both  → mic + system (default)
- * - mic   → your voice only
- * - system → Meet/Teams/YouTube only
+ * Voice capture is OFF by default so chat is ready for typed messages.
+ * User starts listening with the mic button and picks mic / system / both as needed.
  *
- * Mic button pauses/resumes; mode toggle switches source without needing a restart click.
+ * Mic button pauses/resumes; mode toggle switches source while listening.
  */
 export const useVoiceAgent = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [captureMode, setCaptureModeState] = useState<CaptureMode>('both');
+  const [captureMode, setCaptureModeState] = useState<CaptureMode>('mic');
   const { stream, cancel, setError } = useAI();
   const cancelRef = useRef(cancel);
   useEffect(() => {
@@ -26,7 +24,7 @@ export const useVoiceAgent = () => {
 
   const transcriptRef = useRef('');
   const isRecordingRef = useRef(false);
-  const captureModeRef = useRef<CaptureMode>('both');
+  const captureModeRef = useRef<CaptureMode>('mic');
   const lastTriggerRef = useRef<number>(0);
   const streamRef = useRef(stream);
   const startedRef = useRef(false);
@@ -153,42 +151,35 @@ export const useVoiceAgent = () => {
     }
   };
 
-  // Auto-start in current preferred mode (default: both)
+  // Sync UI if capture was already running (e.g. hot reload) — never auto-start.
   useEffect(() => {
     let cancelled = false;
 
-    const boot = async () => {
+    const syncExistingCapture = async () => {
       try {
         const state = await invoke<{ is_recording: boolean; mode: string }>(
           'get_audio_capture_state'
         );
-        if (cancelled) return;
-        if (state.is_recording) {
-          setIsRecording(true);
-          const m =
-            state.mode === 'both' || state.mode === 'system' || state.mode === 'mic'
-              ? (state.mode as CaptureMode)
-              : 'both';
-          setCaptureModeState(m);
-          captureModeRef.current = m;
-          startedRef.current = true;
-          return;
-        }
-      } catch {
-        // ignore
-      }
+        if (cancelled || !state.is_recording) return;
 
-      if (!cancelled && !startedRef.current) {
-        await startListening(captureModeRef.current);
+        const m =
+          state.mode === 'both' || state.mode === 'system' || state.mode === 'mic'
+            ? (state.mode as CaptureMode)
+            : 'mic';
+        setIsRecording(true);
+        setCaptureModeState(m);
+        captureModeRef.current = m;
+        startedRef.current = true;
+      } catch {
+        // ignore — stay idle for chat
       }
     };
 
-    boot();
+    syncExistingCapture();
 
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

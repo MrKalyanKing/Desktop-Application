@@ -9,7 +9,7 @@ use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::audio::segmentation_engine::SegmentationEngine;
 use crate::modules::audio::vad_engine::VadProfile;
 use crate::modules::transcription::gemini_service::{GeminiTranscriptionService, TranscriptChunk};
-use crate::modules::cognition::question_parser::QuestionParser;
+use crate::modules::cognition::question_parser::{QuestionParser, SubQuestion};
 use crate::modules::audio::echo_reference::{EchoReferenceBuffer, AIAudioOutputSink};
 use crate::modules::audio::preprocess;
 
@@ -157,13 +157,25 @@ fn spawn_background_worker(app: AppHandle, state: Arc<AudioState>, source: Audio
                                 if current_inflight < max_inflight {
                                     inflight_stt.fetch_add(1, Ordering::Relaxed);
                                     let app2 = app.clone();
+                                    let capture_engine2 = Arc::clone(&capture_engine);
                                     let state_manager2 = Arc::clone(&state_manager);
                                     let speaker_tracker2 = Arc::clone(&speaker_tracker);
                                     let transcription_service2 = Arc::clone(&transcription_service);
                                     let question_parser2 = Arc::clone(&question_parser);
                                     let inflight2 = Arc::clone(&inflight_stt);
                                     tokio::spawn(async move {
-                                        process_utterance(&app2, &state_manager2, &speaker_tracker2, &transcription_service2, &question_parser2, &utterance, source, source_label).await;
+                                        process_utterance(
+                                            &app2,
+                                            &capture_engine2,
+                                            &state_manager2,
+                                            &speaker_tracker2,
+                                            &transcription_service2,
+                                            &question_parser2,
+                                            &utterance,
+                                            source,
+                                            source_label,
+                                        )
+                                        .await;
                                         inflight2.fetch_sub(1, Ordering::Relaxed);
                                     });
                                 }
@@ -231,6 +243,7 @@ async fn stop_one_source(app: &AppHandle, state: &AudioState, source: AudioSourc
 
 async fn process_utterance(
     app: &AppHandle,
+    capture_engine: &CaptureEngine,
     state_manager: &ConversationStateManager,
     speaker_tracker: &SpeakerTracker,
     transcription_service: &GeminiTranscriptionService,
@@ -280,7 +293,11 @@ async fn process_utterance(
                 return;
             }
 
-            if confidence < 0.55 {
+            // Mic (exclusive My Voice) is a direct voice assistant — allow slightly lower confidence.
+            let exclusive_mic = source == AudioSource::Microphone
+                && !capture_engine.is_recording(AudioSource::SystemLoopback);
+            let min_confidence = if exclusive_mic { 0.40 } else { 0.55 };
+            if confidence < min_confidence {
                 let _ = app.emit(
                     "audio-clarification-needed",
                     serde_json::json!({
@@ -324,13 +341,47 @@ async fn process_utterance(
                 }),
             );
 
-            // Parse actionable questions from TEXT, then trigger AI with TEXT only
+            // Exclusive My Voice: Whisper text → Gemini answer directly (voice assistant).
+            // System / Both: extract meeting questions; dual-mode mic stays meeting-filtered.
+            let exclusive_mic = source == AudioSource::Microphone
+                && !capture_engine.is_recording(AudioSource::SystemLoopback);
+
+            if exclusive_mic {
+                if is_mic_filler_only(&text) {
+                    println!("[MIC] Skipping filler-only transcript: {}", text);
+                    return;
+                }
+
+                println!("[MIC] STT → Gemini (text only): {}", text);
+
+                let was_generating = state_manager.is_ai_generating();
+                if was_generating {
+                    state_manager.set_interrupted(true);
+                    let _ = app.emit("ai-interrupted", ());
+                }
+
+                let prompt = SubQuestion {
+                    text: text.clone(),
+                    is_question: true,
+                    dependencies: vec![],
+                };
+                state_manager.enqueue_questions(vec![prompt.clone()]);
+
+                let _ = app.emit(
+                    "questions-parsed",
+                    serde_json::json!({ "questions": [prompt] }),
+                );
+
+                process_next_question(app, state_manager).await;
+                return;
+            }
+
+            // System audio (and mic while in Both): parse actionable questions from TEXT
             match question_parser
                 .parse_questions(&text, source == AudioSource::SystemLoopback)
                 .await
             {
                 Ok(sub_questions) => {
-                    // Only enqueue real questions / actionable tasks
                     let actionable: Vec<_> = sub_questions
                         .into_iter()
                         .filter(|q| q.is_question && !q.text.trim().is_empty())
@@ -362,6 +413,25 @@ async fn process_utterance(
         }
         Err(e) => eprintln!("Transcription error: {}", e),
     }
+}
+
+fn is_mic_filler_only(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    if t.is_empty() {
+        return true;
+    }
+    let fillers = [
+        "um", "uh", "uhm", "hmm", "mm", "mhm", "ah", "oh", "okay", "ok", "yeah", "yep", "yup",
+        "right", "alright", "huh", "bye",
+    ];
+    let words: Vec<&str> = t
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return true;
+    }
+    words.len() <= 2 && words.iter().all(|w| fillers.contains(w))
 }
 
 async fn process_next_question(app: &AppHandle, state_manager: &ConversationStateManager) {

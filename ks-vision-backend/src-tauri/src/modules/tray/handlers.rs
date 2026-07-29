@@ -27,7 +27,7 @@ pub fn handle_tray_menu_event(app: &AppHandle, event: MenuEvent) {
             }
         }
         "restart" => {
-            let _ = app.emit("restart-ollama", ());
+            let _ = app.emit("restart-gemini", ());
         }
         "quit" => {
             app.exit(0);

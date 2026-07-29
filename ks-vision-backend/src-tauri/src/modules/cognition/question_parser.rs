@@ -149,14 +149,20 @@ RULES:
                     status_code, err_text
                 );
 
-                if manager.is_quota_error(status_code, &err_text) {
+                let should_switch = manager.is_quota_error(status_code, &err_text)
+                    || manager.is_model_unavailable(status_code, &err_text);
+                if should_switch {
                     let delay = manager.parse_retry_delay(&err_text);
+                    let reason = crate::modules::ai::model_manager::GeminiModelManager::switch_reason(
+                        status_code,
+                        &err_text,
+                    );
                     manager.blacklist_model(&active_model, &err_text, delay);
 
                     attempts += 1;
                     if attempts < manager.models_len() {
-                        let next_model = manager.select_model();
-                        println!("[MODEL MANAGER] 429 received -> Switching to: {}", next_model);
+                        let next_model = manager.select_model_preferring(None);
+                        manager.log_switch(&active_model, &next_model, &reason);
                         continue;
                     }
                 }
