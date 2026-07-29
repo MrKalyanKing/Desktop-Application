@@ -10,7 +10,7 @@ use crate::modules::audio::segmentation_engine::SegmentationEngine;
 use crate::modules::audio::vad_engine::VadProfile;
 use crate::modules::transcription::gemini_service::{GeminiTranscriptionService, TranscriptChunk};
 use crate::modules::cognition::question_parser::QuestionParser;
-use crate::modules::audio::echo_reference::EchoReferenceBuffer;
+use crate::modules::audio::echo_reference::{EchoReferenceBuffer, AIAudioOutputSink};
 use crate::modules::audio::preprocess;
 
 pub struct AudioState {

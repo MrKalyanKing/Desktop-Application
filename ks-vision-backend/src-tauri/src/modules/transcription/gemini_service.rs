@@ -114,9 +114,36 @@ impl GeminiTranscriptionService {
             }
         }
 
-        let is_system = source_label.eq_ignore_ascii_case("System");
-        let system_instruction = if is_system {
-            "You are a production-grade speech-to-text engine for remote meeting / video call audio \
+        let mut final_text = String::new();
+        let mut using_local_stt = false;
+        let local_url = std::env::var("LOCAL_WHISPER_URL")
+            .unwrap_or_else(|_| "http://localhost:8080/v1/audio/transcriptions".to_string());
+        
+        let duration_sec = prepared.len() as f32 / 16000.0;
+        
+        println!("\n[TRANSCRIBE] ==================================================");
+        println!("[TRANSCRIBE] 🎯 Attempting local Whisper.cpp STT at {}...", local_url);
+        println!("[TRANSCRIBE] ⏱️ Audio duration: {:.2}s ({} samples)", duration_sec, prepared.len());
+        
+        match call_local_whisper(&local_url, wav_bytes.clone()).await {
+            Ok(text) => {
+                final_text = text;
+                using_local_stt = true;
+                println!("[TRANSCRIBE] ✅ SUCCESS! Local Whisper STT transcribed: \"{}\"", final_text);
+                println!("[TRANSCRIBE] 🚀 Bypassing Gemini STT to save quota and reduce latency.");
+                println!("[TRANSCRIBE] ==================================================\n");
+            }
+            Err(err) => {
+                println!("[TRANSCRIBE WARNING] ⚠️ Local Whisper STT unavailable or failed: {}", err);
+                println!("[TRANSCRIBE INFO] 🔄 Falling back to Gemini Multimodal Audio STT...");
+                println!("[TRANSCRIBE] ==================================================\n");
+            }
+        }
+
+        if !using_local_stt {
+            let is_system = source_label.eq_ignore_ascii_case("System");
+            let system_instruction = if is_system {
+                "You are a production-grade speech-to-text engine for remote meeting / video call audio \
 (Google Meet, Microsoft Teams, Zoom, YouTube, browser speakers). The audio is often compressed, \
 echoey, or mixed with light background noise. Your job is maximum word accuracy.
 
@@ -131,8 +158,8 @@ homophones and clipped syllables.
 6. Add punctuation and '?' on questions.
 7. Ignore non-speech (music beds, UI beeps, hold music) — if no human speech, output exactly: (silence)
 8. Output ONLY the transcript text — no preamble, labels, or commentary."
-        } else {
-            "You are a production-grade speech-to-text engine for close-talk microphone audio.
+            } else {
+                "You are a production-grade speech-to-text engine for close-talk microphone audio.
 
 RULES:
 1. Transcribe accurately with punctuation; preserve names, numbers, acronyms, technical terms.
@@ -140,123 +167,125 @@ RULES:
 3. Use context for homophones; mark truly unintelligible words as [unclear: 'approx'].
 4. If no speech, output exactly: (silence)
 5. Output ONLY the transcript text."
-        };
-
-        let user_prompt = format!(
-            "{}\nSource: {} | Speaker: {}\n\
-Transcribe this audio carefully. Capture minute details of what was spoken. \
-Output ONLY the transcription text.",
-            context_prompt, source_label, speaker_id
-        );
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(45))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        let payload = serde_json::json!({
-            "systemInstruction": {
-                "parts": [{ "text": system_instruction }]
-            },
-            "contents": [{
-                "parts": [
-                    { "text": user_prompt },
-                    {
-                        "inlineData": {
-                            "mimeType": "audio/wav",
-                            "data": b64_data
-                        }
-                    }
-                ]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 2048
-            }
-        });
-
-        let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
-        let mut attempts = 0;
-
-        loop {
-            let active_model = manager.select_model();
-            println!("[TRANSCRIBE] Using: {} ({} samples)", active_model, prepared.len());
-
-            let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                active_model, api_key
-            );
-
-            let resp = match client.post(&url).json(&payload).send().await {
-                Ok(r) => r,
-                Err(e) => return Err(format!("Failed to send transcription request: {}", e)),
             };
 
-            let status_code = resp.status();
-            if !status_code.is_success() {
-                let err_text = resp.text().await.unwrap_or_default();
-                eprintln!(
-                    "[TRANSCRIBE ERROR] Gemini API returned status {}: {}",
-                    status_code, err_text
+            let user_prompt = format!(
+                "{}\nSource: {} | Speaker: {}\n\
+Transcribe this audio carefully. Capture minute details of what was spoken. \
+Output ONLY the transcription text.",
+                context_prompt, source_label, speaker_id
+            );
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(45))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+
+            let payload = serde_json::json!({
+                "systemInstruction": {
+                    "parts": [{ "text": system_instruction }]
+                },
+                "contents": [{
+                    "parts": [
+                        { "text": user_prompt },
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/wav",
+                                "data": b64_data
+                            }
+                        }
+                    ]
+                }],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 2048
+                }
+            });
+
+            let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
+            let mut attempts = 0;
+
+            loop {
+                let active_model = manager.select_model();
+                println!("[TRANSCRIBE] Using: {} ({} samples)", active_model, prepared.len());
+
+                let url = format!(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                    active_model, api_key
                 );
 
-                if manager.is_quota_error(status_code, &err_text) {
-                    let delay = manager.parse_retry_delay(&err_text);
-                    manager.blacklist_model(&active_model, &err_text, delay);
+                let resp = match client.post(&url).json(&payload).send().await {
+                    Ok(r) => r,
+                    Err(e) => return Err(format!("Failed to send transcription request: {}", e)),
+                };
 
-                    attempts += 1;
-                    if attempts < manager.models_len() {
-                        let next_model = manager.select_model();
-                        println!("[MODEL MANAGER] 429 received -> Switching to: {}", next_model);
-                        continue;
+                let status_code = resp.status();
+                if !status_code.is_success() {
+                    let err_text = resp.text().await.unwrap_or_default();
+                    eprintln!(
+                        "[TRANSCRIBE ERROR] Gemini API returned status {}: {}",
+                        status_code, err_text
+                    );
+
+                    if manager.is_quota_error(status_code, &err_text) {
+                        let delay = manager.parse_retry_delay(&err_text);
+                        manager.blacklist_model(&active_model, &err_text, delay);
+
+                        attempts += 1;
+                        if attempts < manager.models_len() {
+                            let next_model = manager.select_model();
+                            println!("[MODEL MANAGER] 429 received -> Switching to: {}", next_model);
+                            continue;
+                        }
+                    }
+
+                    return Err(format!(
+                        "Gemini API returned error status {}: {}",
+                        status_code, err_text
+                    ));
+                }
+
+                let gemini_resp: GeminiResponse = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
+
+                let mut text = gemini_resp
+                    .candidates
+                    .and_then(|c| c.into_iter().next())
+                    .and_then(|c| c.content)
+                    .and_then(|c| c.parts)
+                    .and_then(|p| p.into_iter().next())
+                    .and_then(|p| p.text)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+
+                // Normalize empty / silence markers
+                let lower = text.to_lowercase();
+                if lower.is_empty()
+                    || lower == "(silence)"
+                    || lower == "silence"
+                    || lower == "[silence]"
+                    || lower == "..."
+                {
+                    return Ok((String::new(), 0.0));
+                }
+
+                // Strip accidental model preambles
+                for prefix in ["Transcript:", "Transcription:", "Output:"] {
+                    if let Some(rest) = text.strip_prefix(prefix) {
+                        text = rest.trim().to_string();
                     }
                 }
 
-                return Err(format!(
-                    "Gemini API returned error status {}: {}",
-                    status_code, err_text
-                ));
+                let confidence = calculate_confidence(&text, duration_sec);
+                return Ok((text, confidence));
             }
+        } // Close if !using_local_stt
 
-            let gemini_resp: GeminiResponse = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
-
-            let mut text = gemini_resp
-                .candidates
-                .and_then(|c| c.into_iter().next())
-                .and_then(|c| c.content)
-                .and_then(|c| c.parts)
-                .and_then(|p| p.into_iter().next())
-                .and_then(|p| p.text)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-
-            // Normalize empty / silence markers
-            let lower = text.to_lowercase();
-            if lower.is_empty()
-                || lower == "(silence)"
-                || lower == "silence"
-                || lower == "[silence]"
-                || lower == "..."
-            {
-                return Ok((String::new(), 0.0));
-            }
-
-            // Strip accidental model preambles
-            for prefix in ["Transcript:", "Transcription:", "Output:"] {
-                if let Some(rest) = text.strip_prefix(prefix) {
-                    text = rest.trim().to_string();
-                }
-            }
-
-            let duration_sec = prepared.len() as f32 / 16000.0;
-            let confidence = calculate_confidence(&text, duration_sec);
-
-            return Ok((text, confidence));
-        }
+        let confidence = calculate_confidence(&final_text, duration_sec);
+        Ok((final_text, confidence))
     }
 }
 
@@ -324,4 +353,41 @@ pub fn calculate_confidence(text: &str, audio_duration_sec: f32) -> f32 {
     }
 
     confidence.clamp(0.0, 1.0)
+}
+
+async fn call_local_whisper(url: &str, wav_bytes: Vec<u8>) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500)) // Fast timeout for local network
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let part = reqwest::multipart::Part::bytes(wav_bytes)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| e.to_string())?;
+
+    let form = reqwest::multipart::Form::new()
+        .part("file", part);
+
+    let response = client
+        .post(url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Local Whisper API returned status {}", response.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WhisperResponse {
+        text: String,
+    }
+
+    let resp_json: WhisperResponse = response.json()
+        .await
+        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+
+    Ok(resp_json.text.trim().to_string())
 }
