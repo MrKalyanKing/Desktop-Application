@@ -24,6 +24,19 @@ impl StreamingAgc {
         }
     }
 
+    /// Gentler AGC for meeting/system audio — preserve remote speaker dynamics.
+    pub fn for_meeting() -> Self {
+        Self {
+            target_rms: 0.10,
+            max_gain: 4.0,
+            min_gain: 0.5,
+            attack: 0.25,
+            release: 0.06,
+            current_gain: 1.0,
+            noise_floor: 0.005,
+        }
+    }
+
     /// Process samples in-place. Returns frame RMS after gain.
     pub fn process(&mut self, samples: &mut [f32]) -> f32 {
         if samples.is_empty() {

@@ -14,17 +14,41 @@ use crate::modules::audio::preprocess;
 use crate::modules::transcription::wav::write_wav_to_bytes;
 
 const VOICE_SYSTEM_MIC: &str = "You are an AI Meeting Copilot. The user is speaking to you. \
-Listen to the audio and answer directly and concisely (under 80 words). \
+Listen carefully to the audio — including technical terms (NestJS, Kubernetes, PostgreSQL, JWT, Docker, Redis, TypeORM, etc.). \
+Answer directly and concisely (under 100 words). \
 If the audio is silence, noise, or not a real question/request, reply with exactly: SKIP";
 
-const VOICE_SYSTEM_MEETING: &str = "You are an AI Meeting Copilot listening to meeting/system audio. \
-If there is a clear question or actionable request for the candidate/user, answer it under 80 words. \
+const VOICE_SYSTEM_MEETING: &str = "You are an AI Meeting Copilot listening to another person speaking in a meeting. \
+Listen carefully to their full question — preserve technical vocabulary exactly. \
+If there is a clear question or actionable request, answer it helpfully under 100 words. \
 If there is no actionable question, reply with exactly: SKIP";
 
-const MAX_OUTPUT_TOKENS: u32 = 220;
+const MAX_OUTPUT_TOKENS: u32 = 280;
 const MAX_SAMPLES: usize = 12 * 16000; // 12s cap
 
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn voice_debug_enabled() -> bool {
+    matches!(
+        std::env::var("VOICE_DEBUG")
+            .or_else(|_| std::env::var("KS_VISION_VOICE_DEBUG"))
+            .as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+    )
+}
+
+fn rms_peak(samples: &[f32]) -> (f32, f32) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sum = 0.0f32;
+    let mut peak = 0.0f32;
+    for &s in samples {
+        sum += s * s;
+        peak = peak.max(s.abs());
+    }
+    ((sum / samples.len() as f32).sqrt(), peak)
+}
 
 #[derive(Deserialize)]
 struct GeminiResponse {
@@ -127,7 +151,47 @@ pub async fn answer_from_audio(
     };
 
     let duration_s = clipped.len() as f32 / sample_rate as f32;
+    let capture_s = samples.len() as f32 / sample_rate as f32;
+    let prepared_s = prepared.len() as f32 / sample_rate as f32;
+    let (cap_rms, cap_peak) = rms_peak(samples);
+    let (prep_rms, prep_peak) = rms_peak(clipped);
     let wav = write_wav_to_bytes(clipped, sample_rate);
+
+    if voice_debug_enabled() {
+        println!("========== VOICE DEBUG ==========");
+        println!("Capture Duration: {:.3} s ({} samples)", capture_s, samples.len());
+        println!(
+            "Processed Duration: {:.3} s ({} samples)",
+            prepared_s,
+            prepared.len()
+        );
+        println!(
+            "Uploaded Duration: {:.3} s ({} samples)",
+            duration_s,
+            clipped.len()
+        );
+        println!("Sample Rate: {} Hz mono", sample_rate);
+        println!("Bytes Uploaded: {}", wav.len());
+        println!(
+            "Capture RMS/Peak: {:.4} / {:.4}",
+            cap_rms, cap_peak
+        );
+        println!(
+            "Uploaded RMS/Peak: {:.4} / {:.4}",
+            prep_rms, prep_peak
+        );
+        println!(
+            "Duration Delta (capture→upload): {:.3} s",
+            capture_s - duration_s
+        );
+        println!("Reasoning Prompt: answer-directly (no separate transcript stage)");
+        println!("Expected Speech: (set VOICE_DEBUG_EXPECTED to compare)");
+        if let Ok(expected) = std::env::var("VOICE_DEBUG_EXPECTED") {
+            if !expected.is_empty() {
+                println!("Expected Speech: {}", expected);
+            }
+        }
+    }
     let b64 = B64.encode(&wav);
     let system = if from_system_audio {
         VOICE_SYSTEM_MEETING
@@ -260,6 +324,15 @@ pub async fn answer_from_audio(
         );
 
         manager.record_success(&model, latency_ms as u64);
+
+        if voice_debug_enabled() {
+            println!("Final Answer: {}", text);
+            println!(
+                "Recognized Transcript: (not available — pipeline is audio→answer; no ASR stage)"
+            );
+            println!("Transcript Match: N/A (enable separate ASR debug probe to measure)");
+            println!("=================================");
+        }
 
         if is_skip_reply(&text) {
             return Ok(None);

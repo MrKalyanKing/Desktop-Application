@@ -1,5 +1,6 @@
 //! Streaming speech worker — NO speech-to-text.
-//! capture → RNNoise → AGC → VAD endpoint → one complete utterance → one Gemini call.
+//! capture → (optional RNNoise) → AGC → VAD endpoint → one utterance → Gemini answer.
+//! Optimized so other speakers (system audio) are not clipped, gated, or dropped.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -7,9 +8,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
-use crate::modules::audio::chunk_optimizer::{
-    ChunkOptimizer, MIN_UTTERANCE_SAMPLES,
-};
+use crate::modules::audio::chunk_optimizer::ChunkOptimizer;
 use crate::modules::audio::rnnoise_processor::RnnoiseProcessor;
 use crate::modules::audio::streaming_agc::StreamingAgc;
 use crate::modules::audio::vad_engine::{VadProfile, VadState, VADEngine};
@@ -17,6 +16,8 @@ use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::transcription::gemini_voice;
 
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
+/// Lead-in pad before detected speech start (~400ms @ 16k) so first words survive.
+const SPEECH_LEAD_PAD: usize = 6_400;
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
@@ -58,8 +59,17 @@ pub fn spawn_streaming_worker(
         };
         let from_system = source == AudioSource::SystemLoopback;
 
-        let mut rnnoise = RnnoiseProcessor::new();
-        let mut agc = StreamingAgc::new();
+        // Meeting/system: skip RNNoise — it damages remote speech consonants.
+        let mut rnnoise = if from_system {
+            None
+        } else {
+            Some(RnnoiseProcessor::new())
+        };
+        let mut agc = if from_system {
+            StreamingAgc::for_meeting()
+        } else {
+            StreamingAgc::new()
+        };
         let mut optimizer = ChunkOptimizer::new();
 
         let mut raw_cursor = 0usize;
@@ -71,8 +81,8 @@ pub fn spawn_streaming_worker(
         let mut last_state = vad.get_state();
         let mut remnant = Vec::new();
 
-        // Exactly one Gemini call at a time — prevents overlapping billing.
-        let max_inflight = 1usize;
+        // System can have one answering + one queued so continuous Q&A keeps flowing.
+        let max_inflight = if from_system { 2 } else { 1 };
         let mut interval = tokio::time::interval(Duration::from_millis(20));
 
         loop {
@@ -94,6 +104,7 @@ pub fn spawn_streaming_worker(
                 _ = interval.tick() => {
                     {
                         let guard = raw_buffer.lock().unwrap();
+                        // Ring wrapped / cleared — reset cursors safely.
                         if guard.len() < raw_cursor {
                             raw_cursor = 0;
                             clean_buf.clear();
@@ -106,7 +117,6 @@ pub fn spawn_streaming_worker(
                         raw_cursor = guard.len();
                     }
                     if scratch.is_empty() {
-                        optimizer.discard_expired_short();
                         if let Some(samples) = optimizer.flush_if_ready() {
                             submit_voice_job(
                                 app.clone(),
@@ -117,14 +127,19 @@ pub fn spawn_streaming_worker(
                                 source_label,
                                 max_inflight,
                             );
+                        } else {
+                            optimizer.discard_expired_short();
                         }
                         continue;
                     }
 
-                    // Never cut / send while user is mid-speech — only buffer.
-                    let mut denoised = rnnoise.process_16k(&scratch);
-                    agc.process(&mut denoised);
-                    clean_buf.extend_from_slice(&denoised);
+                    let mut processed = if let Some(ref mut rn) = rnnoise {
+                        rn.process_16k(&scratch)
+                    } else {
+                        scratch.clone()
+                    };
+                    agc.process(&mut processed);
+                    clean_buf.extend_from_slice(&processed);
                     if clean_buf.len() > CLEAN_CAP_SAMPLES {
                         let excess = clean_buf.len() - CLEAN_CAP_SAMPLES;
                         clean_buf.drain(0..excess);
@@ -144,19 +159,20 @@ pub fn spawn_streaming_worker(
                         let chunk: Vec<f32> = remnant.drain(..frame_size).collect();
                         let abs_pos = clean_buf.len().saturating_sub(remnant.len() + frame_size);
 
-                        let st = vad.get_state();
-                        if matches!(st, VadState::Speech | VadState::Holding) {
+                        let (current_state, triggered) = vad.process_frame(&chunk, &recent_speech);
+
+                        // Mark start AFTER process_frame so the first speech frame is included.
+                        if matches!(current_state, VadState::Speech | VadState::Holding) {
                             if speech_start.is_none() {
-                                speech_start = Some(abs_pos.saturating_sub(frame_size));
+                                speech_start = Some(abs_pos);
                             }
                             recent_speech.extend_from_slice(&chunk);
-                            if recent_speech.len() > 3200 {
-                                let excess = recent_speech.len() - 3200;
+                            if recent_speech.len() > 4800 {
+                                let excess = recent_speech.len() - 4800;
                                 recent_speech.drain(0..excess);
                             }
                         }
 
-                        let (current_state, triggered) = vad.process_frame(&chunk, &recent_speech);
                         if current_state != last_state {
                             let state_str = match current_state {
                                 VadState::Silent => "idle",
@@ -182,10 +198,10 @@ pub fn spawn_streaming_worker(
                     }
 
                     let mut sum_sq = 0.0f32;
-                    for &x in &denoised {
+                    for &x in &processed {
                         sum_sq += x * x;
                     }
-                    let rms = (sum_sq / denoised.len().max(1) as f32).sqrt();
+                    let rms = (sum_sq / processed.len().max(1) as f32).sqrt();
                     let _ = app.emit(
                         "audio-waveform-data",
                         serde_json::json!({
@@ -195,11 +211,10 @@ pub fn spawn_streaming_worker(
                         }),
                     );
 
-                    // Endpoint only — never while still speaking.
                     if boundary {
                         let start = speech_start
                             .unwrap_or(0)
-                            .saturating_sub(1600)
+                            .saturating_sub(SPEECH_LEAD_PAD)
                             .min(boundary_end);
                         let end = boundary_end.min(clean_buf.len());
                         let utterance = if start < end {
@@ -208,11 +223,15 @@ pub fn spawn_streaming_worker(
                             Vec::new()
                         };
 
+                        // Only discard already-consumed audio from the ring, and
+                        // adjust the cursor by the same amount (never drop unread speech).
                         {
                             let mut guard = raw_buffer.lock().unwrap();
-                            let drop_n = (guard.len() / 2).min(guard.len());
-                            guard.discard_front_samples(drop_n);
-                            raw_cursor = guard.len().min(raw_cursor);
+                            let consumed = raw_cursor.min(guard.len());
+                            if consumed > 0 {
+                                guard.discard_front_samples(consumed);
+                                raw_cursor = raw_cursor.saturating_sub(consumed);
+                            }
                         }
                         if end > 0 && end <= clean_buf.len() {
                             clean_buf.drain(0..end);
@@ -222,7 +241,6 @@ pub fn spawn_streaming_worker(
                         speech_start = None;
                         recent_speech.clear();
 
-                        // Gate: fragment may be short; optimizer merges or drops (<1s).
                         if !utterance.is_empty() {
                             if let Some(packed) = optimizer.push_utterance(&utterance) {
                                 submit_voice_job(
@@ -236,6 +254,16 @@ pub fn spawn_streaming_worker(
                                 );
                             }
                         }
+                    } else if let Some(samples) = optimizer.flush_if_ready() {
+                        submit_voice_job(
+                            app.clone(),
+                            Arc::clone(&state_manager),
+                            Arc::clone(&inflight_voice),
+                            samples,
+                            from_system,
+                            source_label,
+                            max_inflight,
+                        );
                     } else {
                         optimizer.discard_expired_short();
                     }
@@ -254,11 +282,10 @@ fn submit_voice_job(
     source_label: &str,
     max_inflight: usize,
 ) {
-    // Final hard gate — never bill Gemini for tiny clips.
-    if samples.len() < MIN_UTTERANCE_SAMPLES {
+    if samples.len() < 9_600 {
         return;
     }
-    // One in-flight request only (no duplicate concurrent calls).
+    // Keep listening/answering — if saturated, still accept up to max_inflight.
     if inflight_voice.load(Ordering::Relaxed) >= max_inflight {
         return;
     }
@@ -267,10 +294,8 @@ fn submit_voice_job(
     let source_label = source_label.to_string();
 
     tokio::spawn(async move {
-        if from_system && state_manager.is_ai_generating() {
-            inflight_voice.fetch_sub(1, Ordering::Relaxed);
-            return;
-        }
+        // Do NOT drop system utterances while answering — queue via inflight instead.
+        let _ = from_system;
 
         let result = gemini_voice::answer_from_audio(&samples, 16000, from_system).await;
 

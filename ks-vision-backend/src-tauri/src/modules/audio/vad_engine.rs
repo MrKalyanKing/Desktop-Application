@@ -112,8 +112,8 @@ impl VADEngine {
         let current_noise_floor = self.noise_floor.load(Ordering::Relaxed);
         let system = self.is_system();
 
-        // System: higher gate so continuous music/bed doesn't count as speech forever
-        let speech_mult = if system { 5.0 } else { 3.5 };
+        // System: slightly higher than mic, but not so high that remote speakers are missed.
+        let speech_mult = if system { 3.8 } else { 3.2 };
         let speech_threshold = current_noise_floor * speech_mult;
         let is_frame_speech = rms > speech_threshold;
 
@@ -121,9 +121,8 @@ impl VADEngine {
         let mut next_state = current_state;
         let mut trigger_boundary = false;
 
-        // Safety cap only — do NOT stream mid-sentence partials for billing/latency.
-        // Prefer natural silence endpointing for complete utterances.
-        let max_speech_ms: u32 = if system { 20_000 } else { 25_000 };
+        // Safety cap only — prefer natural silence endpointing.
+        let max_speech_ms: u32 = if system { 22_000 } else { 25_000 };
 
         match current_state {
             VadState::Silent => {
@@ -132,9 +131,9 @@ impl VADEngine {
                     self.silence_duration_ms.store(0, Ordering::Relaxed);
                     self.speech_duration_ms.store(30, Ordering::Relaxed);
                 } else {
-                    let alpha = if system { 0.08 } else { 0.05 };
+                    let alpha = if system { 0.06 } else { 0.05 };
                     let updated = (1.0 - alpha) * current_noise_floor + alpha * rms;
-                    let min_floor = if system { 0.002 } else { 0.0001 };
+                    let min_floor = if system { 0.0015 } else { 0.0001 };
                     self.noise_floor
                         .store(updated.max(min_floor), Ordering::Relaxed);
                 }
@@ -145,10 +144,10 @@ impl VADEngine {
                 if is_frame_speech {
                     self.silence_duration_ms.store(0, Ordering::Relaxed);
                     if system {
-                        let alpha = 0.01;
-                        let updated = (1.0 - alpha) * current_noise_floor + alpha * (rms * 0.3);
+                        let alpha = 0.008;
+                        let updated = (1.0 - alpha) * current_noise_floor + alpha * (rms * 0.25);
                         self.noise_floor
-                            .store(updated.max(0.002), Ordering::Relaxed);
+                            .store(updated.max(0.0015), Ordering::Relaxed);
                     }
                     if speech_ms >= max_speech_ms {
                         next_state = VadState::Silent;
@@ -163,7 +162,7 @@ impl VADEngine {
             }
             VadState::Holding => {
                 if is_frame_speech {
-                    // User resumed — still same utterance; do not fire API.
+                    // Same utterance continues — do not fire API.
                     next_state = VadState::Speech;
                     self.silence_duration_ms.store(0, Ordering::Relaxed);
                 } else {
@@ -172,13 +171,13 @@ impl VADEngine {
                     self.silence_duration_ms.store(new_silence, Ordering::Relaxed);
 
                     let is_question_incomplete = is_pitch_rising(recent_speech_samples, 16000);
-                    // Wait for a real end-of-sentence pause (not mid-phrase breaths).
+                    // Longer hangover so other speakers' mid-sentence pauses don't cut.
                     let timeout_ms = if system {
-                        if is_question_incomplete { 1_200 } else { 900 }
+                        if is_question_incomplete { 1_800 } else { 1_400 }
                     } else if is_question_incomplete {
-                        1_400
+                        1_500
                     } else {
-                        1_100
+                        1_200
                     };
 
                     if new_silence >= timeout_ms {

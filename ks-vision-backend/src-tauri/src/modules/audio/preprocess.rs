@@ -1,24 +1,25 @@
 //! Light post-endpoint trim helpers for Gemini audio clips.
-//! Primary gain/denoise happen in streaming AGC + RNNoise BEFORE VAD.
+//! Keep processing gentle — aggressive gating damages consonants / tech vocabulary.
 
-/// Soft noise gate: attenuate frames below adaptive floor (keeps speech, reduces hiss/music bed).
+/// Mild noise attenuator — never square-crush soft speech frames.
 pub fn soft_noise_gate(samples: &mut [f32], frame_size: usize) {
     if samples.is_empty() || frame_size == 0 {
         return;
     }
 
-    let mut noise_floor = 0.008f32;
+    let mut noise_floor = 0.006f32;
     for frame in samples.chunks_mut(frame_size) {
         let rms = frame_rms(frame);
-        let is_speech = rms > noise_floor * 2.5;
+        // Higher speech threshold margin so soft consonants stay intact.
+        let is_speech = rms > noise_floor * 1.8;
         if !is_speech {
-            noise_floor = noise_floor * 0.95 + rms * 0.05;
-            let gain = (rms / (noise_floor * 2.0 + 1e-6)).clamp(0.05, 1.0);
+            noise_floor = noise_floor * 0.97 + rms * 0.03;
+            // Gentle linear attenuation only (was gain² — that destroyed consonants).
+            let gain = (rms / (noise_floor * 1.5 + 1e-6)).clamp(0.35, 1.0);
             for s in frame.iter_mut() {
-                *s *= gain * gain;
+                *s *= gain;
             }
         } else {
-            // Slow decay of floor during speech so quiet talkers aren't gated later
             noise_floor = (noise_floor * 0.999).max(0.001);
         }
     }
@@ -26,7 +27,6 @@ pub fn soft_noise_gate(samples: &mut [f32], frame_size: usize) {
 
 /// First-order high-pass (~80 Hz @ 16 kHz) to remove rumble / AC hum.
 pub fn highpass_rumble(samples: &mut [f32]) {
-    // y[n] = α * (y[n-1] + x[n] - x[n-1]), α ≈ 0.97 for ~80Hz @ 16k
     let alpha = 0.97f32;
     let mut prev_x = 0.0f32;
     let mut prev_y = 0.0f32;
@@ -38,7 +38,6 @@ pub fn highpass_rumble(samples: &mut [f32]) {
     }
 }
 
-/// Peak-normalize helper (legacy). Primary gain is StreamingAgc before VAD.
 #[allow(dead_code)]
 pub fn peak_normalize(samples: &mut [f32], target_peak: f32) {
     let mut peak = 0.0f32;
@@ -48,7 +47,6 @@ pub fn peak_normalize(samples: &mut [f32], target_peak: f32) {
     if peak < 1e-5 {
         return;
     }
-    // Only boost quiet clips; don't smash already-loud meeting audio
     if peak < target_peak {
         let gain = (target_peak / peak).min(8.0);
         for s in samples.iter_mut() {
@@ -62,7 +60,7 @@ pub fn peak_normalize(samples: &mut [f32], target_peak: f32) {
     }
 }
 
-/// Trim leading/trailing silence using RMS frames; keep `pad_samples` of context.
+/// Trim leading/trailing silence; keep generous pad so first/last words survive.
 pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
@@ -77,12 +75,12 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
         return samples.to_vec();
     }
 
-    // Adaptive threshold from quietest 20% of frames
     let mut sorted = energies.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let quiet_n = (sorted.len() / 5).max(1);
     let quiet_avg: f32 = sorted[..quiet_n].iter().sum::<f32>() / quiet_n as f32;
-    let threshold = (quiet_avg * 3.5).max(0.004);
+    // Milder threshold — don't treat soft onsets as silence.
+    let threshold = (quiet_avg * 2.5).max(0.003);
 
     let mut first = None;
     let mut last = None;
@@ -96,7 +94,6 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
     }
 
     let (Some(f), Some(l)) = (first, last) else {
-        // Entire clip quiet — nothing to send
         return Vec::new();
     };
 
@@ -108,8 +105,7 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
     samples[start..end].to_vec()
 }
 
-/// Trim speech audio before Gemini multimodal voice answering.
-/// Gain/denoise already applied continuously upstream.
+/// Prepare speech for Gemini — preserve intelligibility over aggressive cleanup.
 pub fn prepare_for_voice(samples: &[f32]) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
@@ -117,9 +113,9 @@ pub fn prepare_for_voice(samples: &[f32]) -> Vec<f32> {
 
     let mut buf = samples.to_vec();
     highpass_rumble(&mut buf);
-    // Soft residual gate only — streaming AGC already set level
     soft_noise_gate(&mut buf, 480);
-    trim_silence(&buf, 480, 1600) // ~100ms pad @ 16k — lower latency
+    // ~350ms pad @ 16k — keep first/last consonants (NestJS, Kubernetes, …)
+    trim_silence(&buf, 480, 5_600)
 }
 
 fn frame_rms(frame: &[f32]) -> f32 {
