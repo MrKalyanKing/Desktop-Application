@@ -4,7 +4,7 @@ use reqwest::Client;
 use crate::modules::ai::errors::AiError;
 use crate::modules::ai::models::{ModelsListResponse, GenerateOptions, ModelInfo};
 use crate::modules::ai::health::HealthStatus;
-use crate::modules::ai::model_manager::GeminiModelManager;
+use crate::modules::ai::model_manager::{GeminiModelManager, ModelCapability};
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tauri::ipc::Channel;
@@ -113,32 +113,34 @@ impl GeminiClient {
     }
 
     pub async fn list_models(&self) -> Result<ModelsListResponse, AiError> {
-        let models = vec![
-            ModelInfo {
-                name: "Gemini 3.5 Flash Lite".to_string(),
-                model: "gemini-3.5-flash-lite".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-            ModelInfo {
-                name: "Gemini 2.5 Flash Lite".to_string(),
-                model: "gemini-2.5-flash-lite".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-            ModelInfo {
-                name: "Gemini 2.5 Flash".to_string(),
-                model: "gemini-2.5-flash".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-            ModelInfo {
-                name: "Gemini 3.1 Flash Lite".to_string(),
-                model: "gemini-3.1-flash-lite".to_string(),
-                size: 0,
-                digest: "".to_string(),
-            },
-        ];
+        let manager = GeminiModelManager::global();
+        let models = manager
+            .known_models()
+            .into_iter()
+            // Keep UI on primary cost/speed tier (exclude text-only safety net).
+            .filter(|id| id != "gemini-2.0-flash-lite")
+            .map(|id| {
+                let name = id
+                    .replace("gemini-", "Gemini ")
+                    .replace('-', " ")
+                    .split_whitespace()
+                    .map(|w| {
+                        let mut c = w.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ModelInfo {
+                    name,
+                    model: id,
+                    size: 0,
+                    digest: String::new(),
+                }
+            })
+            .collect();
 
         Ok(ModelsListResponse { models })
     }
@@ -151,7 +153,7 @@ impl GeminiClient {
         _options: Option<GenerateOptions>,
         cancellation_token: CancellationToken,
     ) -> Result<String, AiError> {
-        println!("[Gemini] Sending text only ({} chars)", prompt.len());
+        println!("[Gemini] Sending text ({} chars)", prompt.len());
         load_env_file();
         let api_key = std::env::var("GEMINI_API_KEY")
             .or_else(|_| std::env::var("VITE_GEMINI_API_KEY"))
@@ -179,25 +181,26 @@ impl GeminiClient {
         };
 
         let manager = GeminiModelManager::global();
+        let capability = ModelCapability::Text;
         let mut tried: HashSet<String> = HashSet::new();
         let mut last_err = String::from("No Gemini model available");
+        let mut logged_selection = false;
 
         while let Some(active_model) =
-            manager.next_model(Some(preferred_model), &tried, false)
+            manager.select_for(capability, Some(preferred_model), &tried)
         {
             tried.insert(active_model.clone());
-            println!(
-                "[AI SYSTEM] Using: {} (try {}/{})",
-                active_model,
-                tried.len(),
-                manager.models_len()
-            );
+            if !logged_selection {
+                manager.log_selected(&active_model, capability);
+                logged_selection = true;
+            }
 
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
                 active_model, api_key
             );
 
+            let request_started = std::time::Instant::now();
             let request = self.client.post(&url).json(&payload).send();
 
             let resp = tokio::select! {
@@ -209,14 +212,14 @@ impl GeminiClient {
                         Ok(r) => r,
                         Err(e) => {
                             last_err = format!("Http network request failed on {}: {}", active_model, e);
-                            eprintln!("[AI SYSTEM ERROR] {}", last_err);
+                            eprintln!("[API ERROR] {}", last_err);
                             manager.blacklist_model(
                                 &active_model,
                                 &last_err,
                                 Some(std::time::Duration::from_secs(15)),
                             );
-                            if let Some(next) = manager.next_model(None, &tried, false) {
-                                manager.log_switch(&active_model, &next, "network error");
+                            if let Some(next) = manager.select_for(capability, None, &tried) {
+                                manager.log_fallback(&active_model, &next, "network error");
                                 continue;
                             }
                             return Err(AiError::NetworkError {
@@ -234,14 +237,13 @@ impl GeminiClient {
                     "Gemini API returned status {} on {}: {}",
                     status_code, active_model, err_text
                 );
-                eprintln!("[AI SYSTEM ERROR] {}", last_err);
+                eprintln!("[API ERROR] {}", last_err);
 
                 if manager.should_fallback(status_code, &err_text) {
-                    let delay = manager.parse_retry_delay(&err_text);
-                    let reason = GeminiModelManager::switch_reason(status_code, &err_text);
-                    manager.blacklist_model(&active_model, &err_text, delay);
-                    if let Some(next_model) = manager.next_model(None, &tried, false) {
-                        manager.log_switch(&active_model, &next_model, &reason);
+                    let reason =
+                        manager.register_failure(&active_model, capability, status_code, &err_text);
+                    if let Some(next_model) = manager.select_for(capability, None, &tried) {
+                        manager.log_fallback(&active_model, &next_model, &reason);
                         continue;
                     }
                     return Err(AiError::GeminiError {
@@ -259,7 +261,7 @@ impl GeminiClient {
 
             let gemini_resp = resp.json::<GeminiResponse>().await.map_err(|e| {
                 eprintln!(
-                    "[AI SYSTEM ERROR] Failed to parse Gemini response payload: {}",
+                    "[API ERROR] Failed to parse Gemini response payload: {}",
                     e
                 );
                 AiError::NetworkError {
@@ -276,10 +278,9 @@ impl GeminiClient {
                 .and_then(|p| p.text)
                 .ok_or_else(|| AiError::EmptyResponse)?;
 
-            println!(
-                "[Gemini] Response received from {} ({} chars)",
-                active_model,
-                text.len()
+            manager.record_success(
+                &active_model,
+                request_started.elapsed().as_millis() as u64,
             );
             return Ok(text);
         }
@@ -326,12 +327,16 @@ impl GeminiClient {
         };
 
         let manager = GeminiModelManager::global();
+        let capability = ModelCapability::Text;
         let mut tried: HashSet<String> = HashSet::new();
         let mut last_err = String::from("No Gemini model available");
+        let mut logged_selection = false;
+        let mut selected_model = String::new();
+        let mut stream_started = std::time::Instant::now();
 
         let response = loop {
             let Some(active_model) =
-                manager.next_model(Some(preferred_model), &tried, false)
+                manager.select_for(capability, Some(preferred_model), &tried)
             else {
                 return Err(AiError::GeminiError {
                     message: format!(
@@ -341,31 +346,30 @@ impl GeminiClient {
                 });
             };
             tried.insert(active_model.clone());
-            println!(
-                "[AI SYSTEM STREAM] Using: {} (try {}/{})",
-                active_model,
-                tried.len(),
-                manager.models_len()
-            );
+            if !logged_selection {
+                manager.log_selected(&active_model, capability);
+                logged_selection = true;
+            }
 
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}",
                 active_model, api_key
             );
 
+            stream_started = std::time::Instant::now();
             let response_res = self.client.post(&url).json(&payload).send().await;
             let resp = match response_res {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = format!("Http network stream failed on {}: {}", active_model, e);
-                    eprintln!("[AI SYSTEM STREAM ERROR] {}", last_err);
+                    eprintln!("[API ERROR] {}", last_err);
                     manager.blacklist_model(
                         &active_model,
                         &last_err,
                         Some(std::time::Duration::from_secs(15)),
                     );
-                    if let Some(next) = manager.next_model(None, &tried, false) {
-                        manager.log_switch(&active_model, &next, "network error");
+                    if let Some(next) = manager.select_for(capability, None, &tried) {
+                        manager.log_fallback(&active_model, &next, "network error");
                         continue;
                     }
                     return Err(AiError::NetworkError {
@@ -381,14 +385,13 @@ impl GeminiClient {
                     "Gemini stream status {} on {}: {}",
                     status_code, active_model, err_text
                 );
-                eprintln!("[AI SYSTEM STREAM ERROR] {}", last_err);
+                eprintln!("[API ERROR] {}", last_err);
 
                 if manager.should_fallback(status_code, &err_text) {
-                    let delay = manager.parse_retry_delay(&err_text);
-                    let reason = GeminiModelManager::switch_reason(status_code, &err_text);
-                    manager.blacklist_model(&active_model, &err_text, delay);
-                    if let Some(next_model) = manager.next_model(None, &tried, false) {
-                        manager.log_switch(&active_model, &next_model, &reason);
+                    let reason =
+                        manager.register_failure(&active_model, capability, status_code, &err_text);
+                    if let Some(next_model) = manager.select_for(capability, None, &tried) {
+                        manager.log_fallback(&active_model, &next_model, &reason);
                         continue;
                     }
                     return Err(AiError::GeminiError {
@@ -404,8 +407,14 @@ impl GeminiClient {
                 });
             }
 
+            selected_model = active_model;
             break resp;
         };
+
+        manager.record_success(
+            &selected_model,
+            stream_started.elapsed().as_millis() as u64,
+        );
 
         let mut stream = response.bytes_stream();
 

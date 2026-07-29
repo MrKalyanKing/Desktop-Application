@@ -125,17 +125,17 @@ RULES:
         });
 
         let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
+        let capability = crate::modules::ai::model_manager::ModelCapability::Text;
         let mut tried = std::collections::HashSet::new();
         let mut last_err = String::from("No Gemini model available");
+        let mut logged_selection = false;
 
-        while let Some(active_model) = manager.next_model(None, &tried, false) {
+        while let Some(active_model) = manager.select_for(capability, None, &tried) {
             tried.insert(active_model.clone());
-            println!(
-                "[QUESTION PARSER] Using: {} (try {}/{})",
-                active_model,
-                tried.len(),
-                manager.models_len()
-            );
+            if !logged_selection {
+                manager.log_selected(&active_model, capability);
+                logged_selection = true;
+            }
 
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -162,18 +162,13 @@ RULES:
                     "Gemini API returned status {}: {}",
                     status_code, err_text
                 );
-                eprintln!("[QUESTION PARSER ERROR] {}", last_err);
+                eprintln!("[API ERROR] {}", last_err);
 
                 if manager.should_fallback(status_code, &err_text) {
-                    let delay = manager.parse_retry_delay(&err_text);
                     let reason =
-                        crate::modules::ai::model_manager::GeminiModelManager::switch_reason(
-                            status_code,
-                            &err_text,
-                        );
-                    manager.blacklist_model(&active_model, &err_text, delay);
-                    if let Some(next_model) = manager.next_model(None, &tried, false) {
-                        manager.log_switch(&active_model, &next_model, &reason);
+                        manager.register_failure(&active_model, capability, status_code, &err_text);
+                    if let Some(next_model) = manager.select_for(capability, None, &tried) {
+                        manager.log_fallback(&active_model, &next_model, &reason);
                         continue;
                     }
                 }

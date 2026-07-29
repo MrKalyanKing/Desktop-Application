@@ -8,7 +8,7 @@ use std::time::Instant;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
 
-use crate::modules::ai::model_manager::GeminiModelManager;
+use crate::modules::ai::model_manager::{GeminiModelManager, ModelCapability};
 use crate::modules::audio::chunk_optimizer::MIN_UTTERANCE_SAMPLES;
 use crate::modules::audio::preprocess;
 use crate::modules::transcription::wav::write_wav_to_bytes;
@@ -163,12 +163,20 @@ pub async fn answer_from_audio(
         .map_err(|e| e.to_string())?;
 
     let manager = GeminiModelManager::global();
+    let capability = ModelCapability::Audio;
     let mut tried: HashSet<String> = HashSet::new();
-    let mut last_err = String::from("No Gemini voice model available");
+    let mut last_err = String::from("No audio-capable Gemini model available");
     let request_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut logged_selection = false;
 
-    while let Some(model) = manager.next_model(None, &tried, true) {
+    // Capability-based: only models that support Audio. Never send audio to text-only.
+    while let Some(model) = manager.select_for(capability, Some(manager.primary_model()), &tried)
+    {
         tried.insert(model.clone());
+        if !logged_selection {
+            manager.log_selected(&model, capability);
+            logged_selection = true;
+        }
 
         println!("[API REQUEST]");
         println!("Model: {}", model);
@@ -187,6 +195,9 @@ pub async fn answer_from_audio(
                 last_err = format!("network error on {}: {}", model, e);
                 eprintln!("[API ERROR] {}", last_err);
                 manager.blacklist_model(&model, &last_err, Some(std::time::Duration::from_secs(15)));
+                if let Some(next) = manager.select_for(capability, None, &tried) {
+                    manager.log_fallback(&model, &next, "network error");
+                }
                 continue;
             }
         };
@@ -198,11 +209,9 @@ pub async fn answer_from_audio(
             eprintln!("[API ERROR] {}", last_err);
 
             if manager.should_fallback(status, &err_text) {
-                let delay = manager.parse_retry_delay(&err_text);
-                let reason = GeminiModelManager::switch_reason(status, &err_text);
-                manager.blacklist_model(&model, &err_text, delay);
-                if let Some(next) = manager.next_model(None, &tried, true) {
-                    manager.log_switch(&model, &next, &reason);
+                let reason = manager.register_failure(&model, capability, status, &err_text);
+                if let Some(next) = manager.select_for(capability, None, &tried) {
+                    manager.log_fallback(&model, &next, &reason);
                     continue;
                 }
             }
@@ -250,6 +259,8 @@ pub async fn answer_from_audio(
             tokens, prompt_tokens, out_tokens
         );
 
+        manager.record_success(&model, latency_ms as u64);
+
         if is_skip_reply(&text) {
             return Ok(None);
         }
@@ -258,7 +269,7 @@ pub async fn answer_from_audio(
     }
 
     Err(format!(
-        "All Gemini voice models exhausted. Last error: {}",
+        "No multimodal/audio model available for voice. Last error: {}",
         last_err
     ))
 }
