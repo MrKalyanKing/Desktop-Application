@@ -26,6 +26,16 @@ impl WhisperEngine {
     }
 
     pub async fn transcribe(&self, samples: &[f32], sample_rate: u32) -> Result<WhisperResult, String> {
+        self.transcribe_with_prompt(samples, sample_rate, None).await
+    }
+
+    /// Chunked / streaming-friendly transcription with optional previous-text prompt for continuity.
+    pub async fn transcribe_with_prompt(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+        prompt: Option<&str>,
+    ) -> Result<WhisperResult, String> {
         if samples.len() < 1600 {
             return Ok(WhisperResult {
                 text: String::new(),
@@ -34,19 +44,22 @@ impl WhisperEngine {
             });
         }
 
+        let t0 = crate::modules::audio::perf_metrics::now();
         println!("[Audio] Captured {} samples @ {}Hz", samples.len(), sample_rate);
         println!("[Whisper] Transcribing locally (audio will NOT be sent to Gemini)...");
 
         let wav = write_wav_to_bytes(samples, sample_rate);
+        let prompt = prompt.map(|p| p.trim()).filter(|p| !p.is_empty());
 
         // 1) HTTP local server
         if let Ok(url) = std::env::var("LOCAL_WHISPER_URL") {
             if !url.trim().is_empty() {
-                match Self::http_transcribe(url.trim(), wav.clone()).await {
+                match Self::http_transcribe(url.trim(), wav.clone(), prompt).await {
                     Ok(mut r) => {
                         println!("[Whisper] Engine=http Confidence={:.2}", r.confidence);
                         println!("[Whisper] Text: {}", r.text);
                         r.engine = "whisper-http".into();
+                        crate::modules::audio::perf_metrics::log_stage("whisper", "stt", t0);
                         return Ok(r);
                     }
                     Err(e) => {
@@ -55,14 +68,18 @@ impl WhisperEngine {
                 }
             }
         } else {
-            // Default local OpenAI-compatible endpoint
-            match Self::http_transcribe("http://127.0.0.1:8080/v1/audio/transcriptions", wav.clone())
-                .await
+            match Self::http_transcribe(
+                "http://127.0.0.1:8080/v1/audio/transcriptions",
+                wav.clone(),
+                prompt,
+            )
+            .await
             {
                 Ok(mut r) => {
                     println!("[Whisper] Engine=http-default Confidence={:.2}", r.confidence);
                     println!("[Whisper] Text: {}", r.text);
                     r.engine = "whisper-http".into();
+                    crate::modules::audio::perf_metrics::log_stage("whisper", "stt", t0);
                     return Ok(r);
                 }
                 Err(e) => {
@@ -77,6 +94,7 @@ impl WhisperEngine {
                 println!("[Whisper] Engine=cli Confidence={:.2}", r.confidence);
                 println!("[Whisper] Text: {}", r.text);
                 r.engine = "whisper-cli".into();
+                crate::modules::audio::perf_metrics::log_stage("whisper", "stt", t0);
                 return Ok(r);
             }
             Err(e) => {
@@ -91,9 +109,13 @@ Gemini will NOT receive audio — fix local STT to continue."
         )
     }
 
-    async fn http_transcribe(url: &str, wav_bytes: Vec<u8>) -> Result<WhisperResult, String> {
+    async fn http_transcribe(
+        url: &str,
+        wav_bytes: Vec<u8>,
+        prompt: Option<&str>,
+    ) -> Result<WhisperResult, String> {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(45))
             .build()
             .map_err(|e| e.to_string())?;
 
@@ -102,10 +124,15 @@ Gemini will NOT receive audio — fix local STT to continue."
             .mime_str("audio/wav")
             .map_err(|e| e.to_string())?;
 
-        let form = reqwest::multipart::Form::new()
+        let mut form = reqwest::multipart::Form::new()
             .part("file", part)
             .text("response_format", "verbose_json")
             .text("language", "en");
+        if let Some(p) = prompt {
+            // Keep prompt short for continuity across overlapping windows
+            let clipped: String = p.chars().rev().take(180).collect::<String>().chars().rev().collect();
+            form = form.text("prompt", clipped);
+        }
 
         let response = client
             .post(url)

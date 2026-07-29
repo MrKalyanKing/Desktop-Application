@@ -1,5 +1,5 @@
-//! Lightweight speech preprocessing for 16 kHz mono float PCM.
-//! Improves Gemini STT on noisy Meet/Teams/YouTube loopback audio.
+//! Light post-endpoint trim helpers for Whisper windows.
+//! Primary gain/denoise happen in streaming AGC + RNNoise BEFORE VAD.
 
 /// Soft noise gate: attenuate frames below adaptive floor (keeps speech, reduces hiss/music bed).
 pub fn soft_noise_gate(samples: &mut [f32], frame_size: usize) {
@@ -38,7 +38,8 @@ pub fn highpass_rumble(samples: &mut [f32]) {
     }
 }
 
-/// Peak-normalize to target peak (default 0.89) without crushing quiet speech too hard.
+/// Peak-normalize helper (legacy). Primary gain is StreamingAgc before VAD.
+#[allow(dead_code)]
 pub fn peak_normalize(samples: &mut [f32], target_peak: f32) {
     let mut peak = 0.0f32;
     for &s in samples.iter() {
@@ -107,7 +108,8 @@ pub fn trim_silence(samples: &[f32], frame_size: usize, pad_samples: usize) -> V
     samples[start..end].to_vec()
 }
 
-/// Full preprocess pipeline before Gemini STT.
+/// Light trim before Whisper. Gain/denoise already applied continuously upstream.
+/// Peak normalize is intentionally NOT used as primary AGC anymore.
 pub fn prepare_for_stt(samples: &[f32]) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
@@ -115,10 +117,9 @@ pub fn prepare_for_stt(samples: &[f32]) -> Vec<f32> {
 
     let mut buf = samples.to_vec();
     highpass_rumble(&mut buf);
+    // Soft residual gate only — streaming AGC already set level
     soft_noise_gate(&mut buf, 480);
-    peak_normalize(&mut buf, 0.89);
-    let trimmed = trim_silence(&buf, 480, 3200); // ~200ms pad @ 16k
-    trimmed
+    trim_silence(&buf, 480, 1600) // ~100ms pad @ 16k — lower latency
 }
 
 fn frame_rms(frame: &[f32]) -> f32 {

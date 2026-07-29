@@ -283,6 +283,7 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
       {/* Live Transcript Display */}
       {transcript && (
         <div className={`text-[10px] bg-slate-950/60 p-2 rounded border border-slate-800/40 font-mono text-slate-200 leading-normal mb-1.5 italic ${isRevising ? 'opacity-50' : ''}`}>
+          <span className="text-[8px] font-bold text-cyan-500/80 not-italic mr-1">LIVE</span>
           "{transcript}"
         </div>
       )}

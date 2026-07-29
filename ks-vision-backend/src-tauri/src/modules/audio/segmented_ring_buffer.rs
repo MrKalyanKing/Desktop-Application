@@ -50,4 +50,21 @@ impl SegmentedRingBuffer {
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
+
+    /// Copy only samples from `from` without cloning the entire buffer.
+    pub fn copy_from(&self, from: usize, out: &mut Vec<f32>) {
+        out.clear();
+        if from >= self.samples.len() {
+            return;
+        }
+        out.extend_from_slice(&self.samples[from..]);
+    }
+
+    /// Snapshot a range [start, end) into `out`.
+    pub fn copy_range(&self, start: usize, end: usize, out: &mut Vec<f32>) {
+        out.clear();
+        let end = end.min(self.samples.len());
+        let start = start.min(end);
+        out.extend_from_slice(&self.samples[start..end]);
+    }
 }

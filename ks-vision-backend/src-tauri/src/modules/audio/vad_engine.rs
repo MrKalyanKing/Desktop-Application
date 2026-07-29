@@ -121,8 +121,8 @@ impl VADEngine {
         let mut next_state = current_state;
         let mut trigger_boundary = false;
 
-        // Force-cut long continuous speech (YouTube/Meet monologues) so STT gets usable chunks
-        let max_speech_ms: u32 = if system { 12_000 } else { 20_000 };
+        // Force-cut long continuous speech into streaming windows for low-latency STT
+        let max_speech_ms: u32 = if system { 8_000 } else { 10_000 };
 
         match current_state {
             VadState::Silent => {
@@ -171,13 +171,13 @@ impl VADEngine {
                     self.silence_duration_ms.store(new_silence, Ordering::Relaxed);
 
                     let is_question_incomplete = is_pitch_rising(recent_speech_samples, 16000);
-                    // System: shorter hold so meeting turns flush faster
+                    // Ultra-low endpoint latency while avoiding premature cuts
                     let timeout_ms = if system {
-                        if is_question_incomplete { 1800 } else { 900 }
+                        if is_question_incomplete { 700 } else { 380 }
                     } else if is_question_incomplete {
-                        2500
+                        650
                     } else {
-                        1200
+                        350
                     };
 
                     if new_silence >= timeout_ms {

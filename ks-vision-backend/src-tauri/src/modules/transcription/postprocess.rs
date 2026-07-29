@@ -23,8 +23,28 @@ pub fn postprocess_transcript(raw: &str, previous_context: &str) -> String {
     text = normalize_punctuation(&text);
     text = restore_capitalization(&text);
 
-    // Light context-aware fix: if previous ended mid-sentence and this is continuation
-    let _ = previous_context;
+    // Light context-aware: if previous ended mid-sentence, lowercase join-friendly start
+    if !previous_context.trim().is_empty() {
+        let prev = previous_context.trim();
+        let ends_open = !prev.ends_with('.') && !prev.ends_with('?') && !prev.ends_with('!');
+        if ends_open && text.len() > 1 {
+            // Prefer the longer overlapping hypothesis style: keep our cleaned text
+            // but drop leading filler that duplicates previous tail words.
+            let prev_tail: Vec<&str> = prev.split_whitespace().rev().take(4).collect();
+            let mut words: Vec<&str> = text.split_whitespace().collect();
+            for tail in prev_tail.iter().rev() {
+                if words
+                    .first()
+                    .map(|w| w.eq_ignore_ascii_case(tail))
+                    .unwrap_or(false)
+                {
+                    words.remove(0);
+                }
+            }
+            text = words.join(" ");
+            text = restore_capitalization(&text);
+        }
+    }
 
     println!("[Correction] Technical vocabulary / cleanup applied");
     text

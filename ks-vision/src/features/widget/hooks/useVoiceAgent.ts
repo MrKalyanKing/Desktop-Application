@@ -68,7 +68,7 @@ export const useVoiceAgent = () => {
         if (nextPrompt) {
           setTimeout(() => {
             triggerAISubmission(nextPrompt);
-          }, 1500);
+          }, 200);
         }
       } catch (err) {
         console.error('Failed to pop next pending question:', err);
@@ -192,6 +192,8 @@ export const useVoiceAgent = () => {
           setTranscript(event.payload.text);
           transcriptRef.current = event.payload.text;
           setIsRecording(true);
+          // Partial = still speaking / decoding; final = endpoint complete
+          setIsTranscribing(event.payload.status === 'partial');
         }
       )
     );
