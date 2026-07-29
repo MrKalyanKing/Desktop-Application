@@ -1,7 +1,10 @@
+use std::collections::HashSet;
+
 use reqwest::Client;
 use crate::modules::ai::errors::AiError;
 use crate::modules::ai::models::{ModelsListResponse, GenerateOptions, ModelInfo};
 use crate::modules::ai::health::HealthStatus;
+use crate::modules::ai::model_manager::GeminiModelManager;
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tauri::ipc::Channel;
@@ -70,7 +73,8 @@ fn load_env_file() {
     }
 }
 
-/// Gemini text API client (chat / reasoning). Speech STT uses gemini_audio multimodal separately.
+/// Gemini text API client (typed chat / reasoning).
+/// Voice path sends audio directly via gemini_voice (no STT).
 pub struct GeminiClient {
     client: Client,
 }
@@ -79,7 +83,8 @@ impl GeminiClient {
     pub fn new(_base_url: Option<String>) -> Self {
         Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                // Text generate can take longer than a health ping.
+                .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
         }
@@ -173,12 +178,20 @@ impl GeminiClient {
             system_instruction,
         };
 
-        let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
-        let mut attempts = 0;
+        let manager = GeminiModelManager::global();
+        let mut tried: HashSet<String> = HashSet::new();
+        let mut last_err = String::from("No Gemini model available");
 
-        loop {
-            let active_model = manager.select_model_preferring(Some(preferred_model));
-            println!("[AI SYSTEM] Using: {}", active_model);
+        while let Some(active_model) =
+            manager.next_model(Some(preferred_model), &tried, false)
+        {
+            tried.insert(active_model.clone());
+            println!(
+                "[AI SYSTEM] Using: {} (try {}/{})",
+                active_model,
+                tried.len(),
+                manager.models_len()
+            );
 
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -195,9 +208,19 @@ impl GeminiClient {
                     match resp_res {
                         Ok(r) => r,
                         Err(e) => {
-                            eprintln!("[AI SYSTEM ERROR] Http network request failed: {}", e);
+                            last_err = format!("Http network request failed on {}: {}", active_model, e);
+                            eprintln!("[AI SYSTEM ERROR] {}", last_err);
+                            manager.blacklist_model(
+                                &active_model,
+                                &last_err,
+                                Some(std::time::Duration::from_secs(15)),
+                            );
+                            if let Some(next) = manager.next_model(None, &tried, false) {
+                                manager.log_switch(&active_model, &next, "network error");
+                                continue;
+                            }
                             return Err(AiError::NetworkError {
-                                message: e.to_string(),
+                                message: last_err.clone(),
                             });
                         }
                     }
@@ -207,36 +230,30 @@ impl GeminiClient {
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
-                eprintln!(
-                    "[AI SYSTEM ERROR] Gemini API returned status {}: {}",
-                    status_code, err_text
+                last_err = format!(
+                    "Gemini API returned status {} on {}: {}",
+                    status_code, active_model, err_text
                 );
+                eprintln!("[AI SYSTEM ERROR] {}", last_err);
 
-                let should_switch = manager.is_quota_error(status_code, &err_text)
-                    || manager.is_model_unavailable(status_code, &err_text);
-                if should_switch {
+                if manager.should_fallback(status_code, &err_text) {
                     let delay = manager.parse_retry_delay(&err_text);
-                    let reason = crate::modules::ai::model_manager::GeminiModelManager::switch_reason(
-                        status_code,
-                        &err_text,
-                    );
+                    let reason = GeminiModelManager::switch_reason(status_code, &err_text);
                     manager.blacklist_model(&active_model, &err_text, delay);
-                    attempts += 1;
-                    if attempts < manager.models_len() {
-                        let next_model = manager.select_model_preferring(None);
+                    if let Some(next_model) = manager.next_model(None, &tried, false) {
                         manager.log_switch(&active_model, &next_model, &reason);
                         continue;
                     }
                     return Err(AiError::GeminiError {
                         message: format!(
-                            "Failed to switch model — all candidates exhausted. Last error on {}: {}",
+                            "All Gemini models exhausted. Last error on {}: {}",
                             active_model, err_text
                         ),
                     });
                 }
 
                 return Err(AiError::GeminiError {
-                    message: format!("Gemini API returned status {}: {}", status_code, err_text),
+                    message: last_err,
                 });
             }
 
@@ -266,6 +283,10 @@ impl GeminiClient {
             );
             return Ok(text);
         }
+
+        Err(AiError::GeminiError {
+            message: format!("All Gemini models exhausted. Last error: {}", last_err),
+        })
     }
 
     pub async fn generate_stream(
@@ -304,12 +325,28 @@ impl GeminiClient {
             system_instruction,
         };
 
-        let manager = crate::modules::ai::model_manager::GeminiModelManager::global();
-        let mut attempts = 0;
+        let manager = GeminiModelManager::global();
+        let mut tried: HashSet<String> = HashSet::new();
+        let mut last_err = String::from("No Gemini model available");
 
         let response = loop {
-            let active_model = manager.select_model_preferring(Some(preferred_model));
-            println!("[AI SYSTEM STREAM] Using: {}", active_model);
+            let Some(active_model) =
+                manager.next_model(Some(preferred_model), &tried, false)
+            else {
+                return Err(AiError::GeminiError {
+                    message: format!(
+                        "All Gemini models exhausted. Last stream error: {}",
+                        last_err
+                    ),
+                });
+            };
+            tried.insert(active_model.clone());
+            println!(
+                "[AI SYSTEM STREAM] Using: {} (try {}/{})",
+                active_model,
+                tried.len(),
+                manager.models_len()
+            );
 
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}",
@@ -320,12 +357,19 @@ impl GeminiClient {
             let resp = match response_res {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!(
-                        "[AI SYSTEM STREAM ERROR] Http network stream request failed: {}",
-                        e
+                    last_err = format!("Http network stream failed on {}: {}", active_model, e);
+                    eprintln!("[AI SYSTEM STREAM ERROR] {}", last_err);
+                    manager.blacklist_model(
+                        &active_model,
+                        &last_err,
+                        Some(std::time::Duration::from_secs(15)),
                     );
+                    if let Some(next) = manager.next_model(None, &tried, false) {
+                        manager.log_switch(&active_model, &next, "network error");
+                        continue;
+                    }
                     return Err(AiError::NetworkError {
-                        message: e.to_string(),
+                        message: last_err.clone(),
                     });
                 }
             };
@@ -333,29 +377,23 @@ impl GeminiClient {
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
-                eprintln!(
-                    "[AI SYSTEM STREAM ERROR] Gemini stream returned status {}: {}",
-                    status_code, err_text
+                last_err = format!(
+                    "Gemini stream status {} on {}: {}",
+                    status_code, active_model, err_text
                 );
+                eprintln!("[AI SYSTEM STREAM ERROR] {}", last_err);
 
-                let should_switch = manager.is_quota_error(status_code, &err_text)
-                    || manager.is_model_unavailable(status_code, &err_text);
-                if should_switch {
+                if manager.should_fallback(status_code, &err_text) {
                     let delay = manager.parse_retry_delay(&err_text);
-                    let reason = crate::modules::ai::model_manager::GeminiModelManager::switch_reason(
-                        status_code,
-                        &err_text,
-                    );
+                    let reason = GeminiModelManager::switch_reason(status_code, &err_text);
                     manager.blacklist_model(&active_model, &err_text, delay);
-                    attempts += 1;
-                    if attempts < manager.models_len() {
-                        let next_model = manager.select_model_preferring(None);
+                    if let Some(next_model) = manager.next_model(None, &tried, false) {
                         manager.log_switch(&active_model, &next_model, &reason);
                         continue;
                     }
                     return Err(AiError::GeminiError {
                         message: format!(
-                            "Failed to switch model — all candidates exhausted. Last stream error on {}: {}",
+                            "All Gemini models exhausted. Last stream error on {}: {}",
                             active_model, err_text
                         ),
                     });

@@ -11,6 +11,5 @@ pub mod streaming_agc;
 pub mod rnnoise_processor;
 pub mod perf_metrics;
 pub mod chunk_optimizer;
-pub mod finalize;
 pub mod streaming_pipeline;
 pub mod commands;

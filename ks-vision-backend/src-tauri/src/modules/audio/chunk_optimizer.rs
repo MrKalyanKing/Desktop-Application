@@ -9,7 +9,6 @@ pub struct ChunkOptimizer {
     pending: Vec<f32>,
     pending_started: Option<Instant>,
     last_audio_hash: u64,
-    last_transcript: String,
     last_submit_at: Option<Instant>,
 }
 
@@ -19,7 +18,6 @@ impl ChunkOptimizer {
             pending: Vec::new(),
             pending_started: None,
             last_audio_hash: 0,
-            last_transcript: String::new(),
             last_submit_at: None,
         }
     }
@@ -100,28 +98,6 @@ impl ChunkOptimizer {
         self.last_audio_hash = hash;
         self.last_submit_at = Some(Instant::now());
         Some(samples)
-    }
-
-    /// Skip Gemini answer/STT if transcript is near-duplicate of the last one.
-    pub fn is_duplicate_transcript(&mut self, text: &str) -> bool {
-        let t = text.trim().to_lowercase();
-        if t.is_empty() {
-            return true;
-        }
-        if !self.last_transcript.is_empty() {
-            if t == self.last_transcript {
-                return true;
-            }
-            // High overlap on short strings
-            if t.len() < 80 && self.last_transcript.contains(&t) {
-                return true;
-            }
-            if self.last_transcript.len() < 80 && t.contains(&self.last_transcript) {
-                return true;
-            }
-        }
-        self.last_transcript = t;
-        false
     }
 }
 

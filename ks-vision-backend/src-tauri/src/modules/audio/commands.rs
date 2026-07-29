@@ -6,8 +6,6 @@ use crate::modules::audio::capture_engine::{CaptureEngine, AudioSource, SendStre
 use crate::modules::audio::speaker_tracker::SpeakerTracker;
 use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::audio::segmentation_engine::SegmentationEngine;
-use crate::modules::transcription::gemini_service::{GeminiTranscriptionService, TranscriptChunk};
-use crate::modules::cognition::question_parser::QuestionParser;
 use crate::modules::audio::echo_reference::EchoReferenceBuffer;
 use crate::modules::audio::streaming_pipeline;
 
@@ -16,9 +14,7 @@ pub struct AudioState {
     pub speaker_tracker: Arc<SpeakerTracker>,
     pub state_manager: Arc<ConversationStateManager>,
     pub segmentation_engine: Arc<SegmentationEngine>,
-    pub transcription_service: Arc<GeminiTranscriptionService>,
-    pub question_parser: Arc<QuestionParser>,
-    pub inflight_stt: Arc<AtomicUsize>,
+    pub inflight_voice: Arc<AtomicUsize>,
 }
 
 impl AudioState {
@@ -28,9 +24,7 @@ impl AudioState {
             speaker_tracker: Arc::new(SpeakerTracker::new()),
             state_manager: Arc::new(ConversationStateManager::new()),
             segmentation_engine: Arc::new(SegmentationEngine::new()),
-            transcription_service: Arc::new(GeminiTranscriptionService::new()),
-            question_parser: Arc::new(QuestionParser::new()),
-            inflight_stt: Arc::new(AtomicUsize::new(0)),
+            inflight_voice: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -64,18 +58,15 @@ fn start_one_source(app: &AppHandle, state: &AudioState, source: AudioSource) ->
         app.clone(),
         Arc::clone(&state.capture_engine),
         Arc::clone(&state.state_manager),
-        Arc::clone(&state.speaker_tracker),
-        Arc::clone(&state.transcription_service),
-        Arc::clone(&state.question_parser),
-        Arc::clone(&state.inflight_stt),
+        Arc::clone(&state.inflight_voice),
         source,
     );
     Ok(())
 }
 
-async fn stop_one_source(app: &AppHandle, state: &AudioState, source: AudioSource) -> Result<String, String> {
+async fn stop_one_source(app: &AppHandle, state: &AudioState, source: AudioSource) -> Result<(), String> {
     if !state.capture_engine.is_recording(source) {
-        return Ok(String::new());
+        return Ok(());
     }
     let stop_tx = match source {
         AudioSource::Microphone => state.capture_engine.mic_stop_tx.lock().unwrap().take(),
@@ -84,7 +75,7 @@ async fn stop_one_source(app: &AppHandle, state: &AudioState, source: AudioSourc
     if let Some(tx) = stop_tx {
         let _ = tx.send(());
     }
-    let (samples, stream_opt) = state.capture_engine.stop_capture(source).await;
+    let (_samples, stream_opt) = state.capture_engine.stop_capture(source).await;
     if let Some(send_stream) = stream_opt {
         let SendStream(ref stream) = send_stream;
         let _ = stream.pause();
@@ -92,50 +83,8 @@ async fn stop_one_source(app: &AppHandle, state: &AudioState, source: AudioSourc
             drop(send_stream);
         });
     }
-    if samples.len() < 1600 {
-        return Ok(String::new());
-    }
-    let source_label = if source == AudioSource::Microphone {
-        "Voice"
-    } else {
-        "System"
-    };
-    let speaker_id = if source == AudioSource::Microphone {
-        "You".to_string()
-    } else {
-        state.speaker_tracker.identify_speaker(&samples, 16000)
-    };
-    let prev_context = state.state_manager.get_history(3);
-    match state
-        .transcription_service
-        .transcribe(&samples, source_label, &speaker_id, &prev_context)
-        .await
-    {
-        Ok((text, _)) => {
-            if !text.is_empty() {
-                state.state_manager.add_to_history(TranscriptChunk {
-                    text: text.clone(),
-                    speaker: speaker_id,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                });
-                let _ = crate::modules::database::history::save_message(
-                    app,
-                    if source == AudioSource::Microphone {
-                        "user"
-                    } else {
-                        "system_participant"
-                    },
-                    &text,
-                    source_label,
-                );
-            }
-            Ok(text)
-        }
-        Err(e) => Err(e),
-    }
+    // No STT on stop — voice answers are produced live via Gemini multimodal.
+    Ok(())
 }
 
 #[tauri::command]
@@ -187,20 +136,13 @@ pub async fn stop_audio_capture(
     if !mic_active && !system_active {
         return Ok(String::new());
     }
-    let mut texts = Vec::new();
     if mic_active {
-        let t = stop_one_source(&app, &state, AudioSource::Microphone).await?;
-        if !t.is_empty() {
-            texts.push(t);
-        }
+        stop_one_source(&app, &state, AudioSource::Microphone).await?;
     }
     if system_active {
-        let t = stop_one_source(&app, &state, AudioSource::SystemLoopback).await?;
-        if !t.is_empty() {
-            texts.push(t);
-        }
+        stop_one_source(&app, &state, AudioSource::SystemLoopback).await?;
     }
-    Ok(texts.join(" "))
+    Ok(String::new())
 }
 
 #[tauri::command]

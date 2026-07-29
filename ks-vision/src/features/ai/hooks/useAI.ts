@@ -316,10 +316,43 @@ export const useAI = () => {
     }
   };
 
+  /** Present a direct Gemini voice answer (no STT / no re-prompt). */
+  const presentVoiceAnswer = async (answer: string, source?: string) => {
+    const text = answer.trim();
+    if (!text) return;
+
+    dispatch(setError(null));
+    dispatch(setLoading(false));
+    dispatch(setStreaming(false));
+    dispatch(setLastResponse(text));
+    dispatch(
+      addSessionMessage({
+        role: 'assistant',
+        content: text,
+        id: Date.now(),
+        source: source || 'voice',
+        timestamp: Date.now(),
+      })
+    );
+
+    try {
+      await conversationService.saveMessage('assistant', text, source || 'voice');
+    } catch {
+      // non-fatal
+    }
+
+    if (autoCopyClipboard) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+
+    dispatch(setStatus('connected'));
+  };
+
   return {
     ask,
     stream,
     cancel,
+    presentVoiceAnswer,
     healthCheck,
     getModels,
     loadHistory,
