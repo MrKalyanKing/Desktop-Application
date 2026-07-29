@@ -36,6 +36,23 @@ pub fn run() {
       
       let _ = modules::tray::init_tray(app);
 
+      // Embedded Whisper: load bundled model once (no external process / no localhost)
+      {
+        let resource_dir = app.path().resource_dir().ok();
+        match modules::transcription::embedded_whisper::init_embedded_whisper(resource_dir) {
+          Ok(()) => {
+            println!("[Startup] Embedded speech engine ready");
+          }
+          Err(e) => {
+            eprintln!("[Startup] Embedded speech engine failed to load: {}", e);
+            eprintln!(
+              "[Startup] Place {} under resources/models/ next to the app",
+              modules::transcription::embedded_whisper::bundled_model_name()
+            );
+          }
+        }
+      }
+
       if let Some(window) = app.get_webview_window("main") {
         // Ghost mode: start hidden, no taskbar entry
         let _ = modules::window::ghost::enter_ghost_mode(&window);

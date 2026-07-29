@@ -70,7 +70,8 @@ fn load_env_file() {
     }
 }
 
-/// Gemini text API client (chat / reasoning). Speech STT uses gemini_audio multimodal separately.
+/// Gemini text API client (chat / reasoning only).
+/// Speech recognition is local embedded Whisper — Gemini never receives audio.
 pub struct GeminiClient {
     client: Client,
 }
