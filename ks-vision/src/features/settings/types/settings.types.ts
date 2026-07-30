@@ -39,6 +39,11 @@ export interface HotkeySettings {
   emergencyHide: string;
 }
 
+export interface AIProviderSettings {
+  provider: string;
+  apiKey: string;
+}
+
 export interface AppSettings {
   widget: WidgetSettings;
   ai: AISettings;
@@ -47,4 +52,5 @@ export interface AppSettings {
   hotkeys: HotkeySettings;
   startupMinimized?: boolean;
   launchOnStartup?: boolean;
+  aiProvider?: AIProviderSettings;
 }

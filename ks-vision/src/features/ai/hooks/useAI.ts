@@ -203,8 +203,8 @@ export const useAI = () => {
       await conversationService.saveMessage('user', prompt, 'chat');
       await conversationService.saveMessage('assistant', responseText, 'chat');
       
-      dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now() }));
-      dispatch(addSessionMessage({ role: 'assistant', content: responseText, id: Date.now() + 1 }));
+      dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now(), timestamp: Date.now() }));
+      dispatch(addSessionMessage({ role: 'assistant', content: responseText, id: Date.now() + 1, timestamp: Date.now() }));
 
       // Auto-copy response to clipboard if configured
       if (autoCopyClipboard) {
@@ -282,8 +282,8 @@ export const useAI = () => {
       await conversationService.saveMessage('user', prompt, 'chat');
       await conversationService.saveMessage('assistant', accumulated, 'chat');
 
-      dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now() }));
-      dispatch(addSessionMessage({ role: 'assistant', content: accumulated, id: Date.now() + 1 }));
+      dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now(), timestamp: Date.now() }));
+      dispatch(addSessionMessage({ role: 'assistant', content: accumulated, id: Date.now() + 1, timestamp: Date.now() }));
 
       if (autoCopyClipboard) {
         navigator.clipboard.writeText(accumulated).catch(e => {

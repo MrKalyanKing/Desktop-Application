@@ -20,19 +20,20 @@ impl AiState {
 }
 
 #[tauri::command]
-pub async fn ai_health_check(base_url: Option<String>) -> HealthStatus {
-    let client = GeminiClient::new(base_url);
+pub async fn ai_health_check(app: tauri::AppHandle, base_url: Option<String>) -> HealthStatus {
+    let client = GeminiClient::new(app, base_url);
     client.check_health().await
 }
 
 #[tauri::command]
-pub async fn ai_get_models(base_url: Option<String>) -> Result<ModelsListResponse, AiError> {
-    let client = GeminiClient::new(base_url);
+pub async fn ai_get_models(app: tauri::AppHandle, base_url: Option<String>) -> Result<ModelsListResponse, AiError> {
+    let client = GeminiClient::new(app, base_url);
     client.list_models().await
 }
 
 #[tauri::command]
 pub async fn ask_ai(
+    app: tauri::AppHandle,
     request_id: String,
     model: String,
     prompt: String,
@@ -48,7 +49,7 @@ pub async fn ask_ai(
         active.insert(request_id.clone(), token.clone());
     }
 
-    let client = GeminiClient::new(base_url);
+    let client = GeminiClient::new(app, base_url);
     let result = client.generate(&model, &prompt, system, options, token).await;
 
     {
@@ -61,6 +62,7 @@ pub async fn ask_ai(
 
 #[tauri::command]
 pub async fn stream_ai(
+    app: tauri::AppHandle,
     request_id: String,
     model: String,
     prompt: String,
@@ -77,7 +79,7 @@ pub async fn stream_ai(
         active.insert(request_id.clone(), token.clone());
     }
 
-    let client = GeminiClient::new(base_url);
+    let client = GeminiClient::new(app, base_url);
     let result = client
         .generate_stream(&model, &prompt, system, options, channel, token)
         .await;

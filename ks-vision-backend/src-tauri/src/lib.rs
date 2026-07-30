@@ -106,6 +106,7 @@ pub fn run() {
       modules::settings::commands::save_settings_cmd,
       modules::settings::commands::set_startup_enabled_cmd,
       modules::settings::commands::is_startup_enabled_cmd,
+      modules::settings::commands::test_gemini_connection,
       modules::window::stealth::set_stealth_mode,
       modules::window::stealth::verify_stealth,
       modules::audio::commands::start_audio_capture,

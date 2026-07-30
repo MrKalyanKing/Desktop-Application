@@ -383,7 +383,7 @@ fn spawn_voice_job(
         let started = Instant::now();
         let result = tokio::time::timeout(
             JOB_WATCHDOG,
-            gemini_voice::answer_from_audio(&samples, 16000, from_system),
+            gemini_voice::answer_from_audio(app.clone(), &samples, 16000, from_system),
         )
         .await;
 

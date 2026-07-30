@@ -89,3 +89,16 @@ pub fn is_startup_enabled() -> Result<bool, String> {
         Ok(false)
     }
 }
+
+pub fn get_gemini_api_key(app: &AppHandle) -> Option<String> {
+    let raw_settings = load_settings(app).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw_settings).ok()?;
+    let api_key = json.get("aiProvider")?.get("apiKey")?.as_str()?;
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+

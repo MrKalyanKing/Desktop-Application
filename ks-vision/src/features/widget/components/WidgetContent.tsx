@@ -40,7 +40,7 @@ export const WidgetContent: React.FC = () => {
     sessionHistory
   } = useAI();
 
-  const { isRecording, isTranscribing, transcript, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
+  const { isRecording, isTranscribing, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
 
   const {
     step: screenshotStep,

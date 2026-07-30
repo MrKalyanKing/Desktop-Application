@@ -183,6 +183,7 @@ fn local_skip_reason(samples: &[f32], sample_rate: u32) -> Option<&'static str> 
 /// Send one complete utterance to Gemini.
 /// Junk / silence is filtered **locally** — no API call for those.
 pub async fn answer_from_audio(
+    app: tauri::AppHandle,
     samples: &[f32],
     sample_rate: u32,
     from_system_audio: bool,
@@ -198,7 +199,8 @@ pub async fn answer_from_audio(
         return Ok(None);
     }
 
-    let api_key = load_api_key();
+    let api_key = crate::modules::settings::storage::get_gemini_api_key(&app)
+        .unwrap_or_else(|| load_api_key());
     if api_key.is_empty() {
         return Err("Gemini API key is not configured.".into());
     }

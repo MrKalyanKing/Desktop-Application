@@ -76,12 +76,14 @@ fn load_env_file() {
 /// Gemini text API client (typed chat / reasoning).
 /// Voice path sends audio directly via gemini_voice (no STT).
 pub struct GeminiClient {
+    app: tauri::AppHandle,
     client: Client,
 }
 
 impl GeminiClient {
-    pub fn new(_base_url: Option<String>) -> Self {
+    pub fn new(app: tauri::AppHandle, _base_url: Option<String>) -> Self {
         Self {
+            app,
             client: Client::builder()
                 // Text generate can take longer than a health ping.
                 .timeout(std::time::Duration::from_secs(60))
@@ -92,15 +94,16 @@ impl GeminiClient {
 
     pub async fn check_health(&self) -> HealthStatus {
         load_env_file();
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .or_else(|_| std::env::var("VITE_GEMINI_API_KEY"))
+        let api_key = crate::modules::settings::storage::get_gemini_api_key(&self.app)
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .or_else(|| std::env::var("VITE_GEMINI_API_KEY").ok())
             .unwrap_or_default();
 
         if api_key.is_empty() || api_key == "YOUR_GEMINI_API_KEY_HERE" {
             HealthStatus {
                 available: false,
                 url: "https://generativelanguage.googleapis.com".to_string(),
-                message: "Gemini API key is missing. Please add GEMINI_API_KEY to your .env file."
+                message: "Gemini API key is missing. Please configure it in Settings or add GEMINI_API_KEY to your .env file."
                     .to_string(),
             }
         } else {
@@ -155,14 +158,15 @@ impl GeminiClient {
     ) -> Result<String, AiError> {
         println!("[Gemini] Sending text ({} chars)", prompt.len());
         load_env_file();
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .or_else(|_| std::env::var("VITE_GEMINI_API_KEY"))
+        let api_key = crate::modules::settings::storage::get_gemini_api_key(&self.app)
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .or_else(|| std::env::var("VITE_GEMINI_API_KEY").ok())
             .unwrap_or_default();
 
         if api_key.is_empty() || api_key == "YOUR_GEMINI_API_KEY_HERE" {
             eprintln!("[AI SYSTEM ERROR] Gemini API Key is missing.");
             return Err(AiError::GeminiError {
-                message: "Gemini API Key is not set. Add GEMINI_API_KEY to your .env file."
+                message: "Gemini API Key is not set. Please configure it in Settings or add GEMINI_API_KEY to your .env file."
                     .to_string(),
             });
         }
@@ -301,14 +305,15 @@ impl GeminiClient {
     ) -> Result<(), AiError> {
         println!("[Gemini] Streaming text only ({} chars)", prompt.len());
         load_env_file();
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .or_else(|_| std::env::var("VITE_GEMINI_API_KEY"))
+        let api_key = crate::modules::settings::storage::get_gemini_api_key(&self.app)
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .or_else(|| std::env::var("VITE_GEMINI_API_KEY").ok())
             .unwrap_or_default();
 
         if api_key.is_empty() || api_key == "YOUR_GEMINI_API_KEY_HERE" {
             eprintln!("[AI SYSTEM STREAM ERROR] Gemini API Key is missing.");
             return Err(AiError::GeminiError {
-                message: "Gemini API Key is not set. Add GEMINI_API_KEY to your .env file."
+                message: "Gemini API Key is not set. Please configure it in Settings or add GEMINI_API_KEY to your .env file."
                     .to_string(),
             });
         }

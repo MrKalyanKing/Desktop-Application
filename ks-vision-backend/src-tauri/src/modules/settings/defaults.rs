@@ -35,6 +35,10 @@ pub fn get_default_settings() -> &'static str {
             "scrollCapture": "Ctrl+Shift+S",
             "toggleWidget": "Ctrl+Shift+H",
             "emergencyHide": "Escape"
+        },
+        "aiProvider": {
+            "provider": "Gemini",
+            "apiKey": ""
         }
     }"#
 }
