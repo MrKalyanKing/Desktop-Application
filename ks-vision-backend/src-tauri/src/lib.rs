@@ -45,13 +45,20 @@ pub fn run() {
         let _ = window.set_cursor_visible(false);
       }
 
-      // Ctrl+Shift+K toggles ghost mode (backend only — no UI wiring)
-      let ghost_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
-      app.global_shortcut().on_shortcut(ghost_shortcut, |app_handle, _shortcut, event| {
+      // Ctrl+Shift+H and Ctrl+Shift+K toggle window visibility (ghost mode)
+      let ghost_shortcut_h = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
+      let _ = app.global_shortcut().on_shortcut(ghost_shortcut_h, |app_handle, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
           let _ = modules::window::ghost::toggle_ghost_mode(app_handle);
         }
-      })?;
+      });
+
+      let ghost_shortcut_k = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
+      let _ = app.global_shortcut().on_shortcut(ghost_shortcut_k, |app_handle, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+          let _ = modules::window::ghost::toggle_ghost_mode(app_handle);
+        }
+      });
       
       Ok(())
     })

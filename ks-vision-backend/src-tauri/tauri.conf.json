@@ -5,7 +5,7 @@
   "identifier": "com.ksvision.desktop",
   "build": {
     "frontendDist": "../../ks-vision/dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5176",
     "beforeDevCommand": "cd ../ks-vision && npm run dev",
     "beforeBuildCommand": "cd ../ks-vision && npm run build"
   },

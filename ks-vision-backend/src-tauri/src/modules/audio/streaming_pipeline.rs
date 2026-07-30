@@ -10,14 +10,15 @@ use tauri::{AppHandle, Emitter};
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
 use crate::modules::audio::chunk_optimizer::ChunkOptimizer;
+use crate::modules::audio::preprocess;
 use crate::modules::audio::rnnoise_processor::RnnoiseProcessor;
 use crate::modules::audio::streaming_agc::StreamingAgc;
 use crate::modules::audio::vad_engine::{VadProfile, VadState, VADEngine};
 use crate::modules::cognition::state_manager::ConversationStateManager;
-use crate::modules::transcription::gemini_voice;
+use crate::modules::transcription::gemini_voice::{self, AudioDiagnosticsInfo};
 
 const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
-const SPEECH_LEAD_PAD: usize = 6_400;
+const SPEECH_LEAD_PAD: usize = 8_000; // ~500ms lead padding
 const HARD_MIN_SAMPLES: usize = 19_200; // ~1.2s — drop crumbs before queue/API
 const MAX_QUEUE: usize = 8;
 /// If a request hangs longer than this, free the slot so listening continues.
@@ -63,11 +64,8 @@ pub fn spawn_streaming_worker(
         };
         let from_system = source == AudioSource::SystemLoopback;
 
-        let mut rnnoise = if from_system {
-            None
-        } else {
-            Some(RnnoiseProcessor::new())
-        };
+        // Enable continuous noise reduction for system audio as well to remove fan rumble and ambient noise
+        let mut rnnoise = Some(RnnoiseProcessor::new());
         let mut agc = if from_system {
             StreamingAgc::for_meeting()
         } else {
@@ -80,15 +78,14 @@ pub fn spawn_streaming_worker(
         let mut clean_buf: Vec<f32> = Vec::with_capacity(CLEAN_CAP_SAMPLES);
         let mut vad_cursor = 0usize;
         let mut speech_start: Option<usize> = None;
+        let mut speech_start_time: Option<Instant> = None;
         let mut recent_speech = Vec::new();
         let mut last_state = vad.get_state();
         let mut remnant = Vec::new();
 
-        // Per-worker inflight (NOT shared) so mic/system can't deadlock each other
-        // after a few questions.
         let inflight = Arc::new(AtomicUsize::new(0));
         let max_inflight = 1usize;
-        let pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>> =
+        let pending_queue: Arc<Mutex<VecDeque<(Vec<f32>, AudioDiagnosticsInfo)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let mut interval = tokio::time::interval(Duration::from_millis(20));
 
@@ -96,12 +93,20 @@ pub fn spawn_streaming_worker(
             tokio::select! {
                 _ = &mut stop_rx => {
                     if let Some(samples) = optimizer.flush_pending() {
+                        let diag_info = AudioDiagnosticsInfo {
+                            recording_duration_ms: speech_start_time.map(|t| t.elapsed().as_millis() as u64).unwrap_or(1200),
+                            transient_rejected_count: vad.get_transient_rejected_count(),
+                            vad_speech_frames: vad.get_speech_frames_count(),
+                            merged_chunks: optimizer.get_merged_chunks(),
+                            noise_reduction_enabled: rnnoise.is_some(),
+                        };
                         enqueue_or_run(
                             &app,
                             &state_manager,
                             &inflight,
                             &pending_queue,
                             samples,
+                            diag_info,
                             from_system,
                             source_label,
                             max_inflight,
@@ -127,6 +132,7 @@ pub fn spawn_streaming_worker(
                             clean_buf.clear();
                             vad_cursor = 0;
                             speech_start = None;
+                            speech_start_time = None;
                             recent_speech.clear();
                             remnant.clear();
                         }
@@ -136,12 +142,20 @@ pub fn spawn_streaming_worker(
                     if scratch.is_empty() {
                         optimizer.discard_expired_short();
                         if let Some(samples) = optimizer.flush_if_ready() {
+                            let diag_info = AudioDiagnosticsInfo {
+                                recording_duration_ms: speech_start_time.map(|t| t.elapsed().as_millis() as u64).unwrap_or(1200),
+                                transient_rejected_count: vad.get_transient_rejected_count(),
+                                vad_speech_frames: vad.get_speech_frames_count(),
+                                merged_chunks: optimizer.get_merged_chunks(),
+                                noise_reduction_enabled: rnnoise.is_some(),
+                            };
                             enqueue_or_run(
                                 &app,
                                 &state_manager,
                                 &inflight,
                                 &pending_queue,
                                 samples,
+                                diag_info,
                                 from_system,
                                 source_label,
                                 max_inflight,
@@ -150,13 +164,16 @@ pub fn spawn_streaming_worker(
                         continue;
                     }
 
+                    preprocess::highpass_rumble(&mut scratch);
                     let mut processed = if let Some(ref mut rn) = rnnoise {
                         rn.process_16k(&scratch)
                     } else {
                         scratch.clone()
                     };
                     agc.process(&mut processed);
+                    preprocess::sanitize_samples(&mut processed);
                     clean_buf.extend_from_slice(&processed);
+
                     if clean_buf.len() > CLEAN_CAP_SAMPLES {
                         let excess = clean_buf.len() - CLEAN_CAP_SAMPLES;
                         clean_buf.drain(0..excess);
@@ -181,7 +198,9 @@ pub fn spawn_streaming_worker(
                         if matches!(current_state, VadState::Speech | VadState::Holding) {
                             if speech_start.is_none() {
                                 speech_start = Some(abs_pos);
+                                speech_start_time = Some(Instant::now());
                             }
+                            optimizer.touch();
                             recent_speech.extend_from_slice(&chunk);
                             if recent_speech.len() > 4800 {
                                 let excess = recent_speech.len() - 4800;
@@ -239,6 +258,8 @@ pub fn spawn_streaming_worker(
                             Vec::new()
                         };
 
+                        let rec_duration = speech_start_time.map(|t| t.elapsed().as_millis() as u64).unwrap_or(1200);
+
                         {
                             let mut guard = raw_buffer.lock().unwrap();
                             let consumed = raw_cursor.min(guard.len());
@@ -253,16 +274,26 @@ pub fn spawn_streaming_worker(
                         vad_cursor = 0;
                         remnant.clear();
                         speech_start = None;
+                        speech_start_time = None;
                         recent_speech.clear();
 
                         if !utterance.is_empty() {
                             if let Some(packed) = optimizer.push_utterance(&utterance) {
+                                let diag_info = AudioDiagnosticsInfo {
+                                    recording_duration_ms: rec_duration,
+                                    transient_rejected_count: vad.get_transient_rejected_count(),
+                                    vad_speech_frames: vad.get_speech_frames_count(),
+                                    merged_chunks: optimizer.get_merged_chunks(),
+                                    noise_reduction_enabled: rnnoise.is_some(),
+                                };
+                                vad.reset_metrics();
                                 enqueue_or_run(
                                     &app,
                                     &state_manager,
                                     &inflight,
                                     &pending_queue,
                                     packed,
+                                    diag_info,
                                     from_system,
                                     source_label,
                                     max_inflight,
@@ -272,12 +303,21 @@ pub fn spawn_streaming_worker(
                     } else {
                         optimizer.discard_expired_short();
                         if let Some(samples) = optimizer.flush_if_ready() {
+                            let diag_info = AudioDiagnosticsInfo {
+                                recording_duration_ms: speech_start_time.map(|t| t.elapsed().as_millis() as u64).unwrap_or(1200),
+                                transient_rejected_count: vad.get_transient_rejected_count(),
+                                vad_speech_frames: vad.get_speech_frames_count(),
+                                merged_chunks: optimizer.get_merged_chunks(),
+                                noise_reduction_enabled: rnnoise.is_some(),
+                            };
+                            vad.reset_metrics();
                             enqueue_or_run(
                                 &app,
                                 &state_manager,
                                 &inflight,
                                 &pending_queue,
                                 samples,
+                                diag_info,
                                 from_system,
                                 source_label,
                                 max_inflight,
@@ -294,8 +334,9 @@ fn enqueue_or_run(
     app: &AppHandle,
     state_manager: &Arc<ConversationStateManager>,
     inflight: &Arc<AtomicUsize>,
-    pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
+    pending_queue: &Arc<Mutex<VecDeque<(Vec<f32>, AudioDiagnosticsInfo)>>>,
     samples: Vec<f32>,
+    diag_info: AudioDiagnosticsInfo,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
@@ -309,7 +350,7 @@ fn enqueue_or_run(
         if q.len() >= MAX_QUEUE {
             q.pop_front();
         }
-        q.push_back(samples);
+        q.push_back((samples, diag_info));
         return;
     }
 
@@ -319,6 +360,7 @@ fn enqueue_or_run(
         Arc::clone(inflight),
         Arc::clone(pending_queue),
         samples,
+        diag_info,
         from_system,
         source_label,
         max_inflight,
@@ -329,7 +371,7 @@ fn drain_pending(
     app: &AppHandle,
     state_manager: &Arc<ConversationStateManager>,
     inflight: &Arc<AtomicUsize>,
-    pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
+    pending_queue: &Arc<Mutex<VecDeque<(Vec<f32>, AudioDiagnosticsInfo)>>>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
@@ -341,13 +383,14 @@ fn drain_pending(
         let mut q = pending_queue.lock().unwrap();
         q.pop_front()
     };
-    if let Some(samples) = next {
+    if let Some((samples, diag_info)) = next {
         spawn_voice_job(
             app.clone(),
             Arc::clone(state_manager),
             Arc::clone(inflight),
             Arc::clone(pending_queue),
             samples,
+            diag_info,
             from_system,
             source_label,
             max_inflight,
@@ -359,13 +402,13 @@ fn spawn_voice_job(
     app: AppHandle,
     state_manager: Arc<ConversationStateManager>,
     inflight: Arc<AtomicUsize>,
-    pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>>,
+    pending_queue: Arc<Mutex<VecDeque<(Vec<f32>, AudioDiagnosticsInfo)>>>,
     samples: Vec<f32>,
+    diag_info: AudioDiagnosticsInfo,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
 ) {
-    // Avoid double-count races.
     let prev = inflight.fetch_add(1, Ordering::Relaxed);
     if prev >= max_inflight {
         inflight.fetch_sub(1, Ordering::Relaxed);
@@ -373,7 +416,7 @@ fn spawn_voice_job(
         if q.len() >= MAX_QUEUE {
             q.pop_front();
         }
-        q.push_back(samples);
+        q.push_back((samples, diag_info));
         return;
     }
 
@@ -383,7 +426,7 @@ fn spawn_voice_job(
         let started = Instant::now();
         let result = tokio::time::timeout(
             JOB_WATCHDOG,
-            gemini_voice::answer_from_audio(app.clone(), &samples, 16000, from_system),
+            gemini_voice::answer_from_audio(app.clone(), &samples, 16000, from_system, diag_info),
         )
         .await;
 
@@ -422,10 +465,8 @@ fn spawn_voice_job(
             }
         }
 
-        // Always free the slot so Q4, Q5, … keep working.
         let _ = inflight.fetch_sub(1, Ordering::Relaxed);
 
-        // Drain next sentence immediately (tick also drains as backup).
         drain_pending(
             &app,
             &state_manager,
@@ -437,3 +478,4 @@ fn spawn_voice_job(
         );
     });
 }
+
