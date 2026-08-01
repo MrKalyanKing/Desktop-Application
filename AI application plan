@@ -1,0 +1,95 @@
+# Architectural Redesign: Ultra-Intelligent & Low-Latency AI Copilot Engine
+
+## Context & Objectives
+The user reported two major operational issues with the current application:
+1. **Fails on Scenario-Based Questions**: The app gives shallow, generic, or truncated answers when asked complex technical, system design, or situation-based questions.
+2. **Slow Response Time**: Latency is noticeable because voice responses wait for full non-streaming HTTP REST completions before rendering anything to the UI.
+
+Per the user's explicit directive ("*dontchange any code let us dicuss*"), this document outlines the proposed **next-generation architecture** for discussion and feedback before any code modifications begin.
+
+---
+
+## Technical Root Cause Analysis
+
+### 1. Why Scenario Questions Are Failing
+* **Rigid Length & Format Locking**: `gemini_voice.rs` hardcodes a prompt constraint forcing responses under 50–70 words (8–10 lines). Complex scenarios (e.g., STAR framework, architecture trade-offs, debugging walk-throughs) require structured multi-part explanations.
+* **Static Persona Overfitting**: All incoming queries are forced into a single interview roleplay prompt. When a user asks generic or complex system scenarios, the model attempts to force resume projects into the answer rather than providing deep technical solutions.
+* **Single-Pass Reasoning**: Scenario questions need structured chain-of-thought (Context $\rightarrow$ Core Problem $\rightarrow$ Strategy $\rightarrow$ Solution $\rightarrow$ Edge Cases), which single-turn flash prompts currently omit.
+
+### 2. Why Responses Feel Slow
+* **Non-Streaming REST Call**: Voice answers trigger `generateContent` via HTTP REST and await full response completion before emitting `voice-gemini-answer` to the frontend.
+* **No TTFT (Time-To-First-Token) Streaming**: Users see a loading state for 3–6 seconds rather than seeing text appear within 300–600ms.
+* **Audio Chunk Latency**: Audio processing buffers full 12s audio clips before sending, introducing network and processing delay.
+
+---
+
+## Proposed Architecture Blueprint
+
+```mermaid
+flowchart TD
+    subgraph Audio & Vision Capture
+        A[Microphone / System Audio] --> B[Audio Preprocessor & VAD]
+        C[Screen Capture / OCR] --> D[Context Buffer]
+    end
+
+    subgraph Intent & Routing Layer
+        B --> E[Smart Intent & Scenario Classifier]
+        E -->|Scenario / Deep Query| F[Deep Scenario Orchestrator]
+        E -->|Quick Direct Query| G[Fast Response Engine]
+        E -->|Resume / Persona Match| H[Personal Copilot Engine]
+    end
+
+    subgraph Intelligence & Reasoning Engine
+        F --> I[STAR / Architecture Prompt Builder]
+        I --> J[Gemini 2.5/3.0 Pro / Flash Model Router]
+        D --> I
+    end
+
+    subgraph Low-Latency Streaming Pipeline
+        J --> K[Tauri IPC Token Streamer]
+        G --> K
+        H --> K
+        K -->|Real-Time Token Emitting| L[React UI Overlay / TTFT Stream]
+    end
+```
+
+---
+
+## Key Architectural Improvements
+
+### Component 1: Smart Intent Router & Dynamic Prompting
+* **Intent Classification**:
+  * **Category A (Scenario & Problem Solving)**: Detected when questions involve "*how would you handle...*", "*design a system for...*", "*tell me about a time when...*", or multi-step logic.
+  * **Category B (Direct Knowledge & Quick QA)**: Direct factual questions.
+  * **Category C (Persona / Interview Roleplay)**: Specific questions about personal projects and experience.
+* **Dynamic System Prompts**: Remove rigid word caps for scenario questions. Inject structured framework templates (STAR: Situation, Task, Action, Result for behavioral scenarios; Component-DataFlow-Tradeoffs for system design).
+
+### Component 2: Streaming Token Pipeline (TTFT < 400ms)
+* **Real-time Token Emitting**: Switch backend audio/text pipelines to streaming HTTP/WebSocket endpoints using Tauri IPC channels (`voice-gemini-chunk`).
+* **Instant UI Render**: Text will stream onto the UI letter-by-letter / word-by-word immediately as Gemini generates it, reducing perceived latency by over 80%.
+
+### Component 3: Adaptive Model Routing
+* **Hybrid Tiering**:
+  * **Fast Tier** (`gemini-2.5-flash-lite` / `gemini-3.5-flash-lite`): For quick queries, STT cleanup, and intent detection.
+  * **Deep Intelligence Tier** (`gemini-2.5-flash` / `gemini-2.5-pro`): Activated automatically for scenario-based questions to deliver rich, comprehensive solutions.
+
+### Component 4: Dynamic Context & Conversation Memory
+* **Multi-Turn Context Buffer**: Maintain conversation context across questions so scenario follow-ups ("*how would you scale that?*") have full prior state.
+
+---
+
+## User Review & Key Questions for Discussion
+
+> [!IMPORTANT]
+> **No code has been changed yet.** Please review the proposed architecture and let me know your preferences on the following:
+
+1. **Scenario Answer Depth vs. Length**: For scenario-based questions, do you prefer comprehensive, structured answers (with headings, code snippets, or bullet points), or concise summary cards with expandable details?
+2. **Model Selection**: Are you using a standard Gemini API key with access to models like `gemini-2.5-flash` or `gemini-2.5-pro`, or are you using a specific plan/tier?
+3. **UI Display Preference**: Would you like the streaming response to appear character-by-character in a sleek overlay card on your screen?
+
+---
+
+## Verification & Deployment Plan (Once Approved)
+1. **Latency Benchmark**: Measure time-to-first-token (TTFT) before and after streaming changes.
+2. **Scenario Stress Test**: Test complex scenario questions (System Design, Behavioral STAR questions, Debugging scenarios) to verify reasoning quality.
+3. **UI Streaming Smoothness**: Ensure text updates continuously without UI stutter or flickering.

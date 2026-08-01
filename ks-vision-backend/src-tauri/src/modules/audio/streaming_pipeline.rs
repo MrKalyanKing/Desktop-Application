@@ -394,16 +394,46 @@ fn spawn_voice_job(
                     let _ = app.emit("ai-interrupted", ());
                 }
                 state_manager.set_ai_generating(true);
+
+                // For system audio, Gemini prefixes with "Q: <detected question>\n<answer>".
+                // Split them: emit the question immediately for the input box, emit the answer for chat.
+                let (emit_answer, detected_question) = if from_system {
+                    let mut lines = answer.splitn(2, '\n');
+                    let first = lines.next().unwrap_or("").trim();
+                    let rest = lines.next().unwrap_or("").trim();
+                    if first.to_uppercase().starts_with("Q:") {
+                        let question = first[2..].trim().to_string();
+                        let clean_answer = if rest.is_empty() { answer.clone() } else { rest.to_string() };
+                        (clean_answer, Some(question))
+                    } else {
+                        // No Q: prefix — use full text as answer, no question to surface
+                        (answer.clone(), None)
+                    }
+                } else {
+                    (answer.clone(), None)
+                };
+
+                // Emit detected question first so the UI can paste it immediately
+                if let Some(question) = detected_question {
+                    eprintln!("[SYSTEM QUESTION DETECTED] {}", question);
+                    let _ = app.emit(
+                        "voice-system-question",
+                        serde_json::json!({ "question": question }),
+                    );
+                }
+
                 let _ = app.emit(
                     "voice-gemini-answer",
                     serde_json::json!({
-                        "answer": answer,
+                        "answer": emit_answer,
                         "source": source_label.to_lowercase(),
                     }),
                 );
                 state_manager.set_ai_generating(false);
             }
+
             Ok(Ok(None)) => {}
+
             Ok(Err(e)) => {
                 eprintln!("[API ERROR] {}", e);
                 let _ = app.emit(

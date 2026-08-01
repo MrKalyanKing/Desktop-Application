@@ -14,6 +14,9 @@ export const useVoiceAgent = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState('');
+  // The question detected from system audio — updated each time new audio is heard.
+  // WidgetContent reads this and pastes it into the input box immediately.
+  const [systemQuestion, setSystemQuestion] = useState('');
   const [captureMode, setCaptureModeState] = useState<CaptureMode>('mic');
   const { presentVoiceAnswer, cancel, setError } = useAI();
   const cancelRef = useRef(cancel);
@@ -179,6 +182,13 @@ export const useVoiceAgent = () => {
     );
 
     unlisteners.push(
+      listen<{ question: string }>('voice-system-question', (event) => {
+        const q = event.payload?.question?.trim();
+        if (q) setSystemQuestion(q);
+      })
+    );
+
+    unlisteners.push(
       listen('audio-state-changed', (event: any) => {
         const state = event.payload?.state;
         if (state === 'listening' || state === 'holding') {
@@ -213,6 +223,8 @@ export const useVoiceAgent = () => {
     isRecording,
     isTranscribing,
     transcript,
+    // Updated whenever system audio detects a new question — paste directly into input box.
+    systemQuestion,
     captureMode,
     setCaptureMode: changeCaptureMode,
     toggleVoice: toggleVoiceDirect,

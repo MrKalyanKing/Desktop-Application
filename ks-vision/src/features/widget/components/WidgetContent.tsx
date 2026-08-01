@@ -40,7 +40,13 @@ export const WidgetContent: React.FC = () => {
     sessionHistory
   } = useAI();
 
-  const { isRecording, isTranscribing, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
+  const { isRecording, isTranscribing, systemQuestion, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
+
+  // Paste the detected system audio question into the input box immediately.
+  // Each new question replaces the previous one so the user always sees the latest.
+  useEffect(() => {
+    if (systemQuestion) setInputVal(systemQuestion);
+  }, [systemQuestion]);
 
   const {
     step: screenshotStep,
