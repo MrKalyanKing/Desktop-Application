@@ -1,0 +1,65 @@
+# Parakeet AI Architecture & UI Redesign: Ultra-Intelligent Copilot Engine
+
+## Executive Blueprint
+To deliver a **fully loaded, state-of-the-art intelligent application** that outperforms Parakeet AI, we establish a **Next-Gen Omni-Copilot Engine** paired with a **Sleek Parakeet AI-Style Floating Glassmorphic HUD UI**.
+
+---
+
+## Parakeet AI-Style HUD UI Design System
+
+```mermaid
+flowchart TD
+    subgraph UI ["Parakeet AI Floating Glassmorphic Overlay Widget"]
+        Header["Sleek Header Pill: Mode Selector + Audio Wave Visualizer + Settings"]
+        Wave["Dynamic Multimodal Intelligence Orb / Frequency Visualizer"]
+        StreamCard["Real-Time Live Streaming Markdown Answer Card"]
+        Actions["Quick Action Bar: Copy Answer | Expand Details | Mute Audio"]
+    end
+    Header --> Wave --> StreamCard --> Actions
+```
+
+### UI Features:
+1. **Ultra-Sleek Glassmorphic Floating HUD**:
+   * Dark glass aesthetic (`backdrop-filter: blur(20px)`, `border: 1px solid rgba(255,255,255,0.12)`), sleek rounded corners, glowing aura status ring.
+2. **Dynamic Live Audio Waveform & Intelligence Orb**:
+   * Interactive frequency visualizer indicating active state (`Listening`, `Analyzing Scenario`, `Streaming Answer < 250ms`).
+3. **Streaming Markdown Answer Cards**:
+   * Word-by-word streaming text with structured sections (STAR framework, System Design components, Code blocks with copy buttons).
+4. **Minimal Top Controls**:
+   * Quick toggles for Microphone / System Audio (Zoom/Meet), Opacity Slider, Pin/Unpin.
+
+---
+
+## 4 Technical Pillars That Outperform Parakeet AI
+
+1. **Dual-Perception (Audio + Screen Vision)**: Continuous 60s audio ring buffer paired with live screen vision context.
+2. **Scenario & Intent Classifier**: Dynamically applies STAR behavioral, System Design architecture, and Coding logic templates.
+3. **Zero-Drop Audio Engine**: Removes rigid 12s clipping and low volume drop gates (`rms < 0.008`).
+4. **Sub-250ms Streaming IPC Pipeline**: Real-time character streaming directly into the React UI overlay.
+
+---
+
+## File Change Map
+
+### Frontend UI Redesign (`ks-vision/src/features/`)
+* #### [MODIFY] [AudioIntelligenceUI.tsx](file:///c:/Desktop%20Application/ks-vision/src/features/widget/components/AudioIntelligenceUI.tsx)
+* #### [MODIFY] [WidgetContent.tsx](file:///c:/Desktop%20Application/ks-vision/src/features/widget/components/WidgetContent.tsx)
+* #### [MODIFY] [WidgetHeader.tsx](file:///c:/Desktop%20Application/ks-vision/src/features/widget/components/WidgetHeader.tsx)
+* #### [MODIFY] [useVoiceAgent.ts](file:///c:/Desktop%20Application/ks-vision/src/features/widget/hooks/useVoiceAgent.ts)
+* #### [MODIFY] [index.css](file:///c:/Desktop%20Application/ks-vision/src/index.css)
+
+### Backend Engine (`ks-vision-backend/src-tauri/src/modules/`)
+* #### [NEW] [scenario_engine.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/cognition/scenario_engine.rs)
+* #### [NEW] [context_engine.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/cognition/context_engine.rs)
+* #### [NEW] [ring_buffer.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/audio/ring_buffer.rs)
+* #### [MODIFY] [streaming_pipeline.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/audio/streaming_pipeline.rs)
+* #### [MODIFY] [gemini_voice.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/transcription/gemini_voice.rs)
+* #### [MODIFY] [client.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/ai/client.rs)
+
+---
+
+## User Authorization Required
+
+> [!IMPORTANT]
+> **Please review the Parakeet AI UI & Architecture Plan.**
+> Click **Proceed** to start implementation.

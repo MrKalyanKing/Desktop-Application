@@ -8,7 +8,7 @@ export const conversationService = {
   orchestrateRequest: async (
     prompt: string,
     _source: string,
-    historyLimit = 5
+    historyLimit = 4
   ): Promise<{ fullPrompt: string; systemPrompt: string }> => {
     const history = await historyManager.loadHistory(historyLimit);
     const activeContext = memoryManager.getContext();

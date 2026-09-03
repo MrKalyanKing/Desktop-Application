@@ -1,0 +1,102 @@
+# Next-Gen Omni-Copilot Engine: Advanced Architecture & UI Blueprint
+
+## Executive Blueprint
+This advanced plan transforms **KS-Vision** into an ultra-intelligent, low-latency copilot engine that surpasses standard AI meeting tools like Parakeet AI.
+
+It combines **Dual-Perception (Audio + Screen Vision)**, **Parallel Speculative Reasoning**, **Sub-250ms Token Streaming**, **Zero-Drop Audio Capture**, and a **Parakeet AI-Style Glassmorphic Floating HUD UI**.
+
+---
+
+## 4 Technical Pillars of the Advanced Architecture
+
+```mermaid
+flowchart TD
+    subgraph Pillar1 ["1. Dual-Perception Engine (Audio + Screen Vision)"]
+        Mic["Microphone / System Audio Input"] --> AudioRingBuf["60s Continuous Audio Ring Buffer"]
+        Screen["Live Screen Capture / OCR Context"] --> VisualContext["Active Vision Context Engine"]
+    end
+
+    subgraph Pillar2 ["2. Intent & Scenario Orchestration Router"]
+        AudioRingBuf --> IntentClassifier{"Deep Intent Classifier"}
+        VisualContext --> IntentClassifier
+        IntentClassifier -->|System Architecture| ArchitectureEngine["System Design & Scalability Engine"]
+        IntentClassifier -->|STAR Behavioral| STAREngine["STAR Framework Orchestrator"]
+        IntentClassifier -->|Coding Scenario| CodeEngine["Code Logic & Complexity Analysis"]
+        IntentClassifier -->|Direct Technical QA| FastQA["Ultra-Fast Technical QA Engine"]
+    end
+
+    subgraph Pillar3 ["3. Parallel Speculative Reasoning"]
+        ArchitectureEngine --> CoT["Chain-of-Thought Prompt Injector"]
+        STAREngine --> CoT
+        CodeEngine --> CoT
+        FastQA --> CoT
+        CoT --> ModelRouter["Adaptive Model Router (Gemini 2.5 Pro / Flash)"]
+    end
+
+    subgraph Pillar4 ["4. Sub-250ms Token Streaming & Parakeet Glassmorphic HUD"]
+        ModelRouter --> TauriIPC["IPC Token Streamer (voice-gemini-chunk)"]
+        TauriIPC --> FluidUI["Parakeet Glassmorphic HUD Overlay & Markdown Cards"]
+    end
+```
+
+---
+
+## Technical Superiority Matrix
+
+| Capability | Parakeet AI | Your App (Current) | **Advanced Omni-Copilot Engine** |
+| :--- | :--- | :--- | :--- |
+| **Input Perception** | Audio Only | Audio Only (Clipped to 12s) | **Audio (60s Ring Buffer) + Live Screen/OCR Context** |
+| **Scenario Questions** | General Text | Truncated / 50-word cap | **Deep Chain-of-Thought (STAR, System Architecture, Code, Trade-offs)** |
+| **Response Latency** | ~400ms - 800ms | 4,000ms - 6,000ms (Blocking) | **< 250ms TTFT (Instant Real-time Character Streaming)** |
+| **Audio Capture** | Basic VAD | Strict Volume Cutoff (RMS < 0.008) | **Adaptive Noise Floor + VAD Hysteresis + AGC** |
+| **UI Design** | Standard Floating Box | Fixed Static Text | **Dark Glassmorphic HUD + Pulsing Intelligence Orb + Streaming Cards** |
+
+---
+
+## Audio Hearing & Drop Fixes
+1. **60-Second Ring Buffer (`ring_buffer.rs`)**: Replaces 12s audio chopping to capture long 20-30 second scenario questions completely.
+2. **Dynamic Noise Floor & AGC (`preprocess.rs`)**: Lowers minimum RMS cutoff so quiet microphones and remote meeting voices are never dropped.
+3. **VAD Hysteresis (`streaming_pipeline.rs`)**: 1.8s silence tolerance prevents cutting off speakers mid-thought.
+
+---
+
+## Parakeet AI-Style Glassmorphic HUD UI Redesign
+1. **Dark Glassmorphic Floating HUD**: Semi-transparent dark glass aesthetic (`backdrop-filter: blur(20px)`, `border: 1px solid rgba(255,255,255,0.12)`).
+2. **Pulsing Intelligence Waveform Orb**: Animated frequency visualizer indicating active state (`Listening`, `Analyzing Scenario`, `Streaming Answer`).
+3. **Streaming Markdown Answer Cards**: Live word-by-word streaming cards with syntax-highlighted code blocks, copy buttons, and expandable sections.
+4. **Minimal Quick Controls**: Mode toggle for Mic / System Audio (Meet/Zoom), Opacity Slider, Pin/Unpin, and Mute.
+
+---
+
+## Complete File Change Map
+
+### Backend Engine (`ks-vision-backend/src-tauri/src/modules/`)
+* #### [NEW] [scenario_engine.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/cognition/scenario_engine.rs)
+* #### [NEW] [context_engine.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/cognition/context_engine.rs)
+* #### [NEW] [ring_buffer.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/audio/ring_buffer.rs)
+* #### [MODIFY] [streaming_pipeline.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/audio/streaming_pipeline.rs)
+* #### [MODIFY] [gemini_voice.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/transcription/gemini_voice.rs)
+* #### [MODIFY] [client.rs](file:///c:/Desktop%20Application/ks-vision-backend/src-tauri/src/modules/ai/client.rs)
+
+### Frontend UI (`ks-vision/src/features/`)
+* #### [MODIFY] [AudioIntelligenceUI.tsx](file:///c:/Desktop%20Application/ks-vision/src/features/widget/components/AudioIntelligenceUI.tsx)
+* #### [MODIFY] [WidgetContent.tsx](file:///c:/Desktop%20Application/ks-vision/src/features/widget/components/WidgetContent.tsx)
+* #### [MODIFY] [WidgetHeader.tsx](file:///c:/Desktop%20Application/ks-vision/src/features/widget/components/WidgetHeader.tsx)
+* #### [MODIFY] [useVoiceAgent.ts](file:///c:/Desktop%20Application/ks-vision/src/features/widget/hooks/useVoiceAgent.ts)
+* #### [MODIFY] [index.css](file:///c:/Desktop%20Application/ks-vision/src/index.css)
+
+---
+
+## Verification & Testing Plan
+1. **Latency Benchmark**: Measure time-to-first-token (TTFT target < 250ms).
+2. **Scenario Stress Test**: Test complex System Design, STAR Behavioral, and Algorithmic questions.
+3. **Audio Capture Test**: Test quiet speech, background noise, and long 25-second questions.
+4. **UI Fluidity Test**: Verify zero flicker streaming in the glassmorphic HUD overlay.
+
+---
+
+## User Authorization Required
+
+> [!IMPORTANT]
+> **The advanced implementation plan has been fully restored.**
+> Click **Proceed** or reply to authorize building the implementation.

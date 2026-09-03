@@ -184,7 +184,7 @@ export const useAI = () => {
     }
 
     try {
-      const history = await conversationService.loadHistory(5);
+      const history = await conversationService.loadHistory(4);
       const activeContext = memoryManager.getContext();
       const contextWithHistory = { ...activeContext, chatHistory: history };
       const builtPrompt = buildPrompt(prompt, contextWithHistory);
@@ -259,7 +259,7 @@ export const useAI = () => {
     }
 
     try {
-      const history = await conversationService.loadHistory(5);
+      const history = await conversationService.loadHistory(4);
       const activeContext = memoryManager.getContext();
       const contextWithHistory = { ...activeContext, chatHistory: history };
       const builtPrompt = buildPrompt(prompt, contextWithHistory);
@@ -316,6 +316,17 @@ export const useAI = () => {
     }
   };
 
+  /** Stream partial Gemini voice text into the overlay (do not persist until final). */
+  const presentVoicePartial = (answer: string) => {
+    const text = answer.trim();
+    if (!text) return;
+    dispatch(setError(null));
+    dispatch(setLoading(false));
+    dispatch(setStreaming(true));
+    dispatch(setLastResponse(text));
+    dispatch(setStatus('connected'));
+  };
+
   /** Present a direct Gemini voice answer (no STT / no re-prompt). */
   const presentVoiceAnswer = async (answer: string, source?: string) => {
     const text = answer.trim();
@@ -353,6 +364,7 @@ export const useAI = () => {
     stream,
     cancel,
     presentVoiceAnswer,
+    presentVoicePartial,
     healthCheck,
     getModels,
     loadHistory,

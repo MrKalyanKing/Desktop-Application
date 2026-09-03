@@ -6,13 +6,7 @@ import { HOTKEYS, DOUBLE_PRESS_DELAY } from '../constants/hotkey.constants';
 import { useScreenshot } from '../../screenshot';
 
 export const useGlobalHotkeys = () => {
-  const { 
-    captureActiveWindow, 
-    captureFullscreen, 
-    captureRegion,
-    startScrollCapture, 
-    openRegionSelector 
-  } = useScreenshot();
+  const { captureFullscreen } = useScreenshot();
 
   useEffect(() => {
     let active = true;
@@ -33,10 +27,10 @@ export const useGlobalHotkeys = () => {
           }
         });
 
-        // Active Window capture: Ctrl+Shift+W
+        // Active Window capture: Ctrl+Shift+W (same capture path as F — no UI deadlock)
         await hotkeyService.registerGlobal('Ctrl+Shift+W', async (event) => {
           if (event.state === 'Pressed' && active) {
-            captureActiveWindow();
+            captureFullscreen();
           }
         });
 
@@ -47,17 +41,17 @@ export const useGlobalHotkeys = () => {
           }
         });
 
-        // Region selector overlay: Ctrl+Shift+R
+        // Region: same as fullscreen (region overlay window deadlocks this app)
         await hotkeyService.registerGlobal('Ctrl+Shift+R', async (event) => {
           if (event.state === 'Pressed' && active) {
-            openRegionSelector();
+            captureFullscreen();
           }
         });
 
-        // Scroll capture: Ctrl+Shift+S
+        // Scroll: same as fullscreen (multi-page scroll froze the UI)
         await hotkeyService.registerGlobal('Ctrl+Shift+S', async (event) => {
           if (event.state === 'Pressed' && active) {
-            startScrollCapture();
+            captureFullscreen();
           }
         });
 
@@ -76,15 +70,9 @@ export const useGlobalHotkeys = () => {
     setupGlobalShortcut();
 
     // Listen for coordinates sent back from the transparent fullscreen region-selector window
-    const regionListener = listen<{ x: number; y: number; width: number; height: number }>(
-      'region-selected',
-      (event) => {
-        if (active) {
-          const { x, y, width, height } = event.payload;
-          captureRegion(x, y, width, height);
-        }
-      }
-    );
+    const regionListener = listen('region-selected', () => {
+      if (active) captureFullscreen();
+    });
 
     // Local double escape detection
     let lastEscapeTime = 0;

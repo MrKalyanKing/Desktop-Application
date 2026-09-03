@@ -28,7 +28,7 @@ html, body {
   padding: 0;
   overflow: hidden;
   user-select: none;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
   color: var(--text-primary);
   height: 100vh;
   width: 100vw;

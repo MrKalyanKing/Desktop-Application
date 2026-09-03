@@ -15,7 +15,7 @@ export const WidgetContainer: React.FC<WidgetContainerProps> = ({
   return (
     <div
       className={cn(
-        "widget-glass relative w-full h-full rounded-xl overflow-hidden flex flex-col select-none border border-slate-700/30",
+        "widget-glass relative w-full h-full rounded-2xl overflow-hidden flex flex-col select-none",
         className
       )}
       style={{ opacity, transition: 'opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}

@@ -1,14 +1,40 @@
-import { buildPrompt } from '../utils/promptBuilder';
-import type { PromptContext } from '../types/ai.types';
+//! One dynamic KS-Vision prompt. Scenario labels are UI-only and must not pick canned answers.
 
-export const SYSTEM_PROMPT = `
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScenarioType {
+    General,
+    SystemDesign,
+    BehavioralSTAR,
+    CodingTechnical,
+    DirectQA,
+}
+
+impl ScenarioType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::General => "General Q&A",
+            Self::SystemDesign => "System Design & Architecture",
+            Self::BehavioralSTAR => "STAR Behavioral Scenario",
+            Self::CodingTechnical => "Coding & Algorithm Scenario",
+            Self::DirectQA => "Direct Technical Q&A",
+        }
+    }
+
+    pub fn max_output_tokens(self) -> u32 {
+        512
+    }
+}
+
+const KS_VISION_PROMPT: &str = r#"
 You are KS-Vision, a voice and screen assistant. Answer like an experienced backend developer. Do not brand yourself as any company's interview copilot.
 
 Decide from THIS utterance (and recent turns if present). Do not follow a keyword script.
 
 SPEECH ACT:
 - Small talk, a joke, or the host explaining (no question): one short line even if a tech word appears. Do not dump architecture.
-- Timebox ("in 30 seconds"): shorter than usual. Walk-through / tell me about yourself: ~60–90 seconds on Ember360, then stop.
+- Timebox ("in 30 seconds"): shorter than usual. Walk-through / tell me about yourself: ~60-90 seconds on Ember360, then stop.
 - Socratic ("correct me if I'm wrong"): respond to their claim; do not paste a template.
 - Compare two tools: pick what fits THIS question (e.g. Postgres vs Mongo across projects).
 - Coding: approach, complexity, small code if useful. Prefer TypeScript/Node if they ask for a language you do not use.
@@ -31,7 +57,7 @@ HARD RULES:
 - Independent checks: Promise.allSettled unless one failure must abort all.
 - Scale: under 10k requests/day; then how you would find the bottleneck. Do not invent scale.
 - Do not invent: Google Calendar OAuth, Redis-in-Ember360, AI Coach, Payments as Ember360 modules, live PDF export, fake endpoints.
-- Length: match the situation. Typical technical answer ~90–150 words. Code questions may be longer. Do not list every domain.
+- Length: match the situation. Typical technical answer ~90-150 words. Code may be longer. Do not list every domain.
 
 FACT SHEET (cite at most one item, only if it maps):
 Ember360 is a multi-tenant NestJS + PostgreSQL/TypeORM platform for South Africa entrepreneur programmes. Portals: admin, coach, entrepreneur, corporate. JWT + per-portal refresh cookies (X-Portal-Context). Guards: JwtAuthGuard, RolesGuard. Tenant key: company_id.
@@ -40,39 +66,48 @@ Timeouts: SuperAdmin Axios 15s; reports 180s; Nest keepAlive 65s; coach/entrepre
 Assessments: freeze question_bank_version at start; SUBMITTED locked; SIMPLE_SUM scores not recomputed from a later bank.
 Coaching calendar: internal uniqueness (scheduled blocking roles + gist EXCLUDE). Virtual = Jitsi meeting_url. Not Google Calendar API.
 ICS: integrating sendEmailWithICS(invite.ics) with the Jitsi link. VEVENT UID=session, DTSTART/DTEND UTC, METHOD:REQUEST; reschedule same UID + SEQUENCE++; cancel METHOD:CANCEL. Email can succeed without the .ics attached. Mail is Resend behind a Mailgun-named service.
-Notifications: cron + row-locked batches + WhatsApp nudge log. Queued ≠ delivered.
+Notifications: cron + row-locked batches + WhatsApp nudge log. Queued is not delivered.
 Reports: HTML to S3, not live PDF.
 Banking simulation: Node/Express/Mongo sessions — only for ledger / double-charge / idempotency.
 Ride booking: Socket.IO matching — only for realtime matching.
-`;
+"#;
 
-export const promptService = {
-  createOcrSummaryPrompt: (ocrText: string): { prompt: string; system: string } => {
-    const system = 'You are KS-Vision. Extract key text, user actions, and explain the current workflow from the screen.';
-    const prompt = 'Please summarize the text and interface elements observed in this OCR capture.';
-    return {
-      prompt: buildPrompt(prompt, { ocrText }),
-      system,
-    };
-  },
+pub struct ScenarioEngine;
 
-  createVoiceSummaryPrompt: (transcription: string): { prompt: string; system: string } => {
-    const system = 'You are KS-Vision. Extract key decisions, action items, and meeting milestones from transcription logs.';
-    const prompt = 'Please analyze this voice transcription and generate bulleted summaries.';
-    return {
-      prompt: buildPrompt(prompt, { voiceText: transcription }),
-      system,
-    };
-  },
+impl ScenarioEngine {
+    /// UI badge only. Must not select a different system prompt.
+    pub fn classify_intent(text: &str) -> ScenarioType {
+        let lower = text.to_lowercase();
+        if lower.contains("tell me about a time")
+            || lower.contains("describe a situation")
+            || lower.contains("challenge you faced")
+        {
+            return ScenarioType::BehavioralSTAR;
+        }
+        if lower.contains("write code")
+            || lower.contains("time complexity")
+            || lower.contains("algorithm")
+        {
+            return ScenarioType::CodingTechnical;
+        }
+        if lower.contains("walk me through") || lower.contains("tell me about yourself") {
+            return ScenarioType::DirectQA;
+        }
+        if lower.contains("how would you")
+            || lower.contains("architecture")
+            || lower.contains("design")
+        {
+            return ScenarioType::SystemDesign;
+        }
+        ScenarioType::General
+    }
 
-  createGeneralChatPrompt: (
-    userMessage: string,
-    context: PromptContext,
-    system = SYSTEM_PROMPT
-  ): { prompt: string; system: string } => {
-    return {
-      prompt: buildPrompt(userMessage, context),
-      system,
-    };
-  }
-};
+    pub fn live_system_prompt(from_system_audio: bool) -> String {
+        let role = if from_system_audio {
+            "You are KS-Vision in a live meeting. Listen to the audio. If you hear a question, start with a line `Q: <exact question>` then answer."
+        } else {
+            "You are KS-Vision. Listen to the audio and answer the spoken question."
+        };
+        format!("{role}\n{KS_VISION_PROMPT}")
+    }
+}

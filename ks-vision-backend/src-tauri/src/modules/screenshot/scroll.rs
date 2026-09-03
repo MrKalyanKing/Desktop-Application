@@ -1,7 +1,7 @@
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use image::{DynamicImage, GenericImageView};
-use crate::modules::screenshot::capture::capture_active_window;
+use crate::modules::screenshot::capture::capture_active_window_reliable;
 use crate::modules::image::stitch::stitch_screenshots;
 
 #[link(name = "user32")]
@@ -29,7 +29,7 @@ pub fn capture_scroll_and_stitch() -> Result<Vec<u8>, String> {
     let mut images = Vec::new();
     
     // 1. Initial capture
-    let init_bytes = capture_active_window()?;
+    let init_bytes = capture_active_window_reliable()?;
     let mut last_img = image::load_from_memory(&init_bytes)
         .map_err(|e| format!("Failed to parse initial capture: {}", e))?;
     images.push(last_img.clone());
@@ -46,7 +46,7 @@ pub fn capture_scroll_and_stitch() -> Result<Vec<u8>, String> {
         sleep(Duration::from_millis(600));
 
         // 3. Capture next viewport
-        let next_bytes = match capture_active_window() {
+        let next_bytes = match capture_active_window_reliable() {
             Ok(bytes) => bytes,
             Err(_) => break, // Stop if active window is closed or moved
         };

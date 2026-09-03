@@ -11,15 +11,13 @@ export const useAutoResize = () => {
         const bodyHeight = document.body.scrollHeight;
         
         // Set limits: min 150px (idle), max 650px (expanded)
-        const targetHeight = Math.min(650, Math.max(150, bodyHeight));
-        
+        const targetHeight = Math.min(720, Math.max(560, bodyHeight));
         const currentSize = await win.outerSize();
         const factor = await win.scaleFactor();
         const currentLogicalHeight = currentSize.height / factor;
 
-        // Apply size changes only if there's a meaningful difference
         if (Math.abs(currentLogicalHeight - targetHeight) > 2) {
-          await win.setSize(new LogicalSize(400, targetHeight));
+          await win.setSize(new LogicalSize(440, targetHeight));
         }
       } catch (err) {
         console.warn('Failed to resize window dynamically:', err);

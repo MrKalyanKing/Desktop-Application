@@ -1,27 +1,26 @@
 //! Streaming speech worker.
-//! One spoken sentence → exactly one Gemini API request.
-//! Keeps answering forever: local inflight + FIFO queue + never stuck pending.
+//! One spoken sentence → one Gemini request; new speech cancels the previous stream.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+use tokio_util::sync::CancellationToken;
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
 use crate::modules::audio::chunk_optimizer::ChunkOptimizer;
+use crate::modules::audio::lock_free_ring::SpscAudioRing;
 use crate::modules::audio::rnnoise_processor::RnnoiseProcessor;
 use crate::modules::audio::streaming_agc::StreamingAgc;
 use crate::modules::audio::vad_engine::{VadProfile, VadState, VADEngine};
 use crate::modules::cognition::state_manager::ConversationStateManager;
 use crate::modules::transcription::gemini_voice;
 
-const CLEAN_CAP_SAMPLES: usize = 60 * 16_000;
+const CLEAN_CAP_SAMPLES: usize = 12 * 16_000;
 const SPEECH_LEAD_PAD: usize = 6_400;
-const HARD_MIN_SAMPLES: usize = 19_200; // ~1.2s — drop crumbs before queue/API
-const MAX_QUEUE: usize = 8;
-/// If a request hangs longer than this, free the slot so listening continues.
-const JOB_WATCHDOG: Duration = Duration::from_secs(90);
+const HARD_MIN_SAMPLES: usize = 8_000;
+const JOB_WATCHDOG: Duration = Duration::from_secs(25);
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
@@ -48,7 +47,7 @@ pub fn spawn_streaming_worker(
     vad.reset(profile);
 
     tokio::spawn(async move {
-        let raw_buffer = match source {
+        let raw_buffer: Arc<SpscAudioRing> = match source {
             AudioSource::Microphone => Arc::clone(&capture_engine.mic_buffer),
             AudioSource::SystemLoopback => Arc::clone(&capture_engine.system_buffer),
         };
@@ -75,7 +74,6 @@ pub fn spawn_streaming_worker(
         };
         let mut optimizer = ChunkOptimizer::new();
 
-        let mut raw_cursor = 0usize;
         let mut scratch = Vec::with_capacity(4096);
         let mut clean_buf: Vec<f32> = Vec::with_capacity(CLEAN_CAP_SAMPLES);
         let mut vad_cursor = 0usize;
@@ -84,12 +82,11 @@ pub fn spawn_streaming_worker(
         let mut last_state = vad.get_state();
         let mut remnant = Vec::new();
 
-        // Per-worker inflight (NOT shared) so mic/system can't deadlock each other
-        // after a few questions.
         let inflight = Arc::new(AtomicUsize::new(0));
         let max_inflight = 1usize;
         let pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
+        let active_cancel: Arc<Mutex<Option<CancellationToken>>> = Arc::new(Mutex::new(None));
         let mut interval = tokio::time::interval(Duration::from_millis(20));
 
         loop {
@@ -101,6 +98,7 @@ pub fn spawn_streaming_worker(
                             &state_manager,
                             &inflight,
                             &pending_queue,
+                            &active_cancel,
                             samples,
                             from_system,
                             source_label,
@@ -115,24 +113,13 @@ pub fn spawn_streaming_worker(
                         &state_manager,
                         &inflight,
                         &pending_queue,
+                        &active_cancel,
                         from_system,
                         source_label,
                         max_inflight,
                     );
 
-                    {
-                        let guard = raw_buffer.lock().unwrap();
-                        if guard.len() < raw_cursor {
-                            raw_cursor = 0;
-                            clean_buf.clear();
-                            vad_cursor = 0;
-                            speech_start = None;
-                            recent_speech.clear();
-                            remnant.clear();
-                        }
-                        guard.copy_from(raw_cursor, &mut scratch);
-                        raw_cursor = guard.len();
-                    }
+                    raw_buffer.pop_into(&mut scratch);
                     if scratch.is_empty() {
                         optimizer.discard_expired_short();
                         if let Some(samples) = optimizer.flush_if_ready() {
@@ -141,6 +128,7 @@ pub fn spawn_streaming_worker(
                                 &state_manager,
                                 &inflight,
                                 &pending_queue,
+                                &active_cancel,
                                 samples,
                                 from_system,
                                 source_label,
@@ -239,14 +227,6 @@ pub fn spawn_streaming_worker(
                             Vec::new()
                         };
 
-                        {
-                            let mut guard = raw_buffer.lock().unwrap();
-                            let consumed = raw_cursor.min(guard.len());
-                            if consumed > 0 {
-                                guard.discard_front_samples(consumed);
-                                raw_cursor = raw_cursor.saturating_sub(consumed);
-                            }
-                        }
                         if end > 0 && end <= clean_buf.len() {
                             clean_buf.drain(0..end);
                         }
@@ -255,19 +235,22 @@ pub fn spawn_streaming_worker(
                         speech_start = None;
                         recent_speech.clear();
 
-                        if !utterance.is_empty() {
+                        if !utterance.is_empty() && utterance.len() >= HARD_MIN_SAMPLES {
                             if let Some(packed) = optimizer.push_utterance(&utterance) {
                                 enqueue_or_run(
                                     &app,
                                     &state_manager,
                                     &inflight,
                                     &pending_queue,
+                                    &active_cancel,
                                     packed,
                                     from_system,
                                     source_label,
                                     max_inflight,
                                 );
                             }
+                        } else if !utterance.is_empty() {
+                            let _ = optimizer.push_utterance(&utterance);
                         }
                     } else {
                         optimizer.discard_expired_short();
@@ -277,6 +260,7 @@ pub fn spawn_streaming_worker(
                                 &state_manager,
                                 &inflight,
                                 &pending_queue,
+                                &active_cancel,
                                 samples,
                                 from_system,
                                 source_label,
@@ -295,20 +279,25 @@ fn enqueue_or_run(
     state_manager: &Arc<ConversationStateManager>,
     inflight: &Arc<AtomicUsize>,
     pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
+    active_cancel: &Arc<Mutex<Option<CancellationToken>>>,
     samples: Vec<f32>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
 ) {
-    if samples.len() < HARD_MIN_SAMPLES {
+    let mut utt_buf = crate::modules::audio::ring_buffer::AudioUtteranceBuffer::new(16000);
+    utt_buf.push_samples(&samples);
+    if !utt_buf.is_valid_complete_utterance() {
         return;
     }
 
+    // Barge-in: cancel in-flight Gemini so the new utterance is answered immediately.
     if inflight.load(Ordering::Relaxed) >= max_inflight {
-        let mut q = pending_queue.lock().unwrap();
-        if q.len() >= MAX_QUEUE {
-            q.pop_front();
+        if let Some(token) = active_cancel.lock().unwrap().take() {
+            token.cancel();
         }
+        let mut q = pending_queue.lock().unwrap();
+        q.clear();
         q.push_back(samples);
         return;
     }
@@ -318,6 +307,7 @@ fn enqueue_or_run(
         Arc::clone(state_manager),
         Arc::clone(inflight),
         Arc::clone(pending_queue),
+        Arc::clone(active_cancel),
         samples,
         from_system,
         source_label,
@@ -330,6 +320,7 @@ fn drain_pending(
     state_manager: &Arc<ConversationStateManager>,
     inflight: &Arc<AtomicUsize>,
     pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
+    active_cancel: &Arc<Mutex<Option<CancellationToken>>>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
@@ -347,6 +338,7 @@ fn drain_pending(
             Arc::clone(state_manager),
             Arc::clone(inflight),
             Arc::clone(pending_queue),
+            Arc::clone(active_cancel),
             samples,
             from_system,
             source_label,
@@ -360,30 +352,33 @@ fn spawn_voice_job(
     state_manager: Arc<ConversationStateManager>,
     inflight: Arc<AtomicUsize>,
     pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>>,
+    active_cancel: Arc<Mutex<Option<CancellationToken>>>,
     samples: Vec<f32>,
     from_system: bool,
     source_label: &str,
     max_inflight: usize,
 ) {
-    // Avoid double-count races.
     let prev = inflight.fetch_add(1, Ordering::Relaxed);
     if prev >= max_inflight {
         inflight.fetch_sub(1, Ordering::Relaxed);
-        let mut q = pending_queue.lock().unwrap();
-        if q.len() >= MAX_QUEUE {
-            q.pop_front();
+        if let Some(token) = active_cancel.lock().unwrap().take() {
+            token.cancel();
         }
+        let mut q = pending_queue.lock().unwrap();
+        q.clear();
         q.push_back(samples);
         return;
     }
 
+    let cancel = CancellationToken::new();
+    *active_cancel.lock().unwrap() = Some(cancel.clone());
     let source_label = source_label.to_string();
 
     tokio::spawn(async move {
         let started = Instant::now();
         let result = tokio::time::timeout(
             JOB_WATCHDOG,
-            gemini_voice::answer_from_audio(app.clone(), &samples, 16000, from_system),
+            gemini_voice::answer_from_audio(app.clone(), &samples, 16000, from_system, cancel.clone()),
         )
         .await;
 
@@ -395,27 +390,15 @@ fn spawn_voice_job(
                 }
                 state_manager.set_ai_generating(true);
 
-                // For system audio, Gemini prefixes with "Q: <detected question>\n<answer>".
-                // Split them: emit the question immediately for the input box, emit the answer for chat.
                 let (emit_answer, detected_question) = if from_system {
-                    let mut lines = answer.splitn(2, '\n');
-                    let first = lines.next().unwrap_or("").trim();
-                    let rest = lines.next().unwrap_or("").trim();
-                    if first.to_uppercase().starts_with("Q:") {
-                        let question = first[2..].trim().to_string();
-                        let clean_answer = if rest.is_empty() { answer.clone() } else { rest.to_string() };
-                        (clean_answer, Some(question))
-                    } else {
-                        // No Q: prefix — use full text as answer, no question to surface
-                        (answer.clone(), None)
-                    }
+                    gemini_voice::extract_system_question(&answer)
                 } else {
                     (answer.clone(), None)
                 };
 
-                // Emit detected question first so the UI can paste it immediately
+                gemini_voice::remember_turn(detected_question.as_deref(), &emit_answer);
+
                 if let Some(question) = detected_question {
-                    eprintln!("[SYSTEM QUESTION DETECTED] {}", question);
                     let _ = app.emit(
                         "voice-system-question",
                         serde_json::json!({ "question": question }),
@@ -435,32 +418,44 @@ fn spawn_voice_job(
             Ok(Ok(None)) => {}
 
             Ok(Err(e)) => {
-                eprintln!("[API ERROR] {}", e);
+                if e != "cancelled" {
+                    eprintln!("[API ERROR] {}", e);
+                    let _ = app.emit(
+                        "voice-gemini-error",
+                        serde_json::json!({
+                            "message": e,
+                            "source": source_label.to_lowercase(),
+                        }),
+                    );
+                }
+            }
+            Err(_) => {
+                let msg = format!(
+                    "Voice request timed out after {}s",
+                    started.elapsed().as_secs()
+                );
+                eprintln!("[API ERROR] {}", msg);
                 let _ = app.emit(
                     "voice-gemini-error",
                     serde_json::json!({
-                        "message": e,
+                        "message": msg,
                         "source": source_label.to_lowercase(),
                     }),
                 );
             }
-            Err(_) => {
-                eprintln!(
-                    "[API ERROR] Gemini voice timed out after {}s — continuing to listen",
-                    started.elapsed().as_secs()
-                );
-            }
         }
 
-        // Always free the slot so Q4, Q5, … keep working.
         let _ = inflight.fetch_sub(1, Ordering::Relaxed);
+        if !cancel.is_cancelled() {
+            *active_cancel.lock().unwrap() = None;
+        }
 
-        // Drain next sentence immediately (tick also drains as backup).
         drain_pending(
             &app,
             &state_manager,
             &inflight,
             &pending_queue,
+            &active_cancel,
             from_system,
             &source_label,
             max_inflight,

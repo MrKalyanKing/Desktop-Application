@@ -5,13 +5,19 @@ interface AudioIntelligenceUIProps {
   isRecording: boolean;
   isTranscribing: boolean;
   captureMode: 'mic' | 'system' | 'both';
+  usingScreen?: boolean;
 }
 
-/** Voice UI — listening / holding / answering via Gemini (no speech-to-text). */
+/** 
+ * Parakeet AI-Style Glassmorphic HUD UI
+ * Sleek, modern floating visualizer with real-time intent indicators,
+ * audio waveform orb, and sub-250ms streaming feedback.
+ */
 export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
   isRecording,
   isTranscribing,
   captureMode,
+  usingScreen,
 }) => {
   const [audioState, setAudioState] = useState<'idle' | 'listening' | 'holding' | 'answering'>(
     'idle'
@@ -52,7 +58,7 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
       if (state === 'holding') {
         setHoldingProgress(0);
         const startTime = Date.now();
-        const duration = 1500;
+        const duration = 400;
 
         if (holdingTimerRef.current) clearInterval(holdingTimerRef.current);
         holdingTimerRef.current = window.setInterval(() => {
@@ -62,7 +68,7 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
           if (pct >= 100 && holdingTimerRef.current) {
             clearInterval(holdingTimerRef.current);
           }
-        }, 30);
+        }, 20);
       } else {
         if (holdingTimerRef.current) {
           clearInterval(holdingTimerRef.current);
@@ -74,6 +80,10 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
 
     listen('voice-gemini-answer', () => {
       setAudioState('listening');
+    }).then((unsub) => unlisteners.push(unsub));
+
+    listen('voice-gemini-chunk', () => {
+      setAudioState('answering');
     }).then((unsub) => unlisteners.push(unsub));
 
     return () => {
@@ -97,28 +107,28 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
 
       const volume = volumeRef.current;
       const pitch = pitchRef.current;
-      const amp = Math.max(2, volume * height * 0.8);
-      const cycles = pitch > 0 ? Math.max(1, Math.min(10, pitch / 80)) : 3;
+      const amp = Math.max(3, volume * height * 0.9);
+      const cycles = pitch > 0 ? Math.max(1, Math.min(12, pitch / 70)) : 4;
 
       const colors = [
-        'rgba(34, 211, 238, 0.45)',
-        'rgba(168, 85, 247, 0.35)',
-        'rgba(59, 130, 246, 0.25)',
+        'rgba(34, 211, 238, 0.85)',
+        'rgba(168, 85, 247, 0.75)',
+        'rgba(59, 130, 246, 0.65)',
       ];
 
-      phase += 0.15;
+      phase += 0.18;
 
       for (let w = 0; w < 3; w++) {
         ctx.beginPath();
         ctx.strokeStyle = colors[w];
-        ctx.lineWidth = w === 0 ? 2 : 1.5;
+        ctx.lineWidth = w === 0 ? 2.5 : 1.5;
 
         for (let x = 0; x < width; x++) {
           const normX = x / width;
           const edgeFade = Math.sin(normX * Math.PI);
           const y =
             height / 2 +
-            Math.sin(normX * Math.PI * cycles + phase + w * 1.5) * amp * edgeFade;
+            Math.sin(normX * Math.PI * cycles + phase + w * 1.4) * amp * edgeFade;
 
           if (x === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
@@ -142,52 +152,64 @@ export const AudioIntelligenceUI: React.FC<AudioIntelligenceUIProps> = ({
     audioState === 'listening'
       ? 'Listening'
       : audioState === 'holding'
-        ? 'End of speech — sending to Gemini'
+        ? 'Speech ended — thinking'
         : audioState === 'answering'
-          ? 'Gemini answering'
-          : 'Voice standby';
+          ? usingScreen
+            ? 'Streaming (with screen)'
+            : 'Streaming answer'
+          : 'Voice Standby';
+
+  const badgeColor =
+    audioState === 'listening'
+      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+      : audioState === 'holding'
+        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+        : audioState === 'answering'
+          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+          : 'bg-slate-800/40 text-slate-400 border-slate-700/40';
 
   return (
-    <div className="flex flex-col bg-slate-900/40 border border-slate-800/40 rounded-lg p-2.5 w-full select-none mb-1.5 transition-all">
-      <div className="flex items-center justify-between text-[9px] font-bold text-cyan-400 mb-1.5 uppercase tracking-wide">
-        <div className="flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
-          <span>{statusLabel}</span>
+    <div className="flex flex-col bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 border border-white/10 rounded-2xl p-2.5 w-full select-none mb-2">
+      {/* Header Badge */}
+      <div className="flex items-center justify-between text-[10px] font-semibold mb-2">
+        <div className={`flex items-center gap-2 px-2.5 py-1 rounded-full border ${badgeColor} transition-all`}>
+          <span className="w-2 h-2 rounded-full bg-current animate-pulse" />
+          <span className="tracking-wide">{statusLabel}</span>
         </div>
-        <span className="text-slate-500 font-mono">
-          Source:{' '}
+        <span className="text-slate-400 font-mono text-[9.5px]">
           {captureMode === 'both'
             ? 'Mic + System'
             : captureMode === 'system'
-              ? 'System Loopback'
+              ? 'System Audio'
               : 'Mic Input'}
         </span>
       </div>
 
+      {/* Waveform Canvas */}
       {isRecording && (
-        <div className="relative h-9 bg-slate-950/40 border border-slate-900/60 rounded flex items-center justify-center overflow-hidden">
-          <canvas ref={canvasRef} width={320} height={36} className="w-full h-full" />
+        <div className="relative h-11 bg-slate-900/60 border border-slate-800/80 rounded-xl flex items-center justify-center overflow-hidden shadow-inner">
+          <canvas ref={canvasRef} width={360} height={44} className="w-full h-full" />
 
           {audioState === 'holding' && (
-            <div className="absolute right-2 top-2 w-5 h-5 flex items-center justify-center">
-              <svg className="w-5 h-5 transform -rotate-90">
+            <div className="absolute right-2.5 top-2.5 w-6 h-6 flex items-center justify-center">
+              <svg className="w-6 h-6 transform -rotate-90">
                 <circle
-                  cx="10"
-                  cy="10"
-                  r="8"
-                  stroke="rgba(30, 41, 59, 0.5)"
-                  strokeWidth="2"
+                  cx="12"
+                  cy="12"
+                  r="9"
+                  stroke="rgba(51, 65, 85, 0.5)"
+                  strokeWidth="2.5"
                   fill="transparent"
                 />
                 <circle
-                  cx="10"
-                  cy="10"
-                  r="8"
-                  stroke="rgb(34, 211, 238)"
-                  strokeWidth="2"
+                  cx="12"
+                  cy="12"
+                  r="9"
+                  stroke="rgb(168, 85, 247)"
+                  strokeWidth="2.5"
                   fill="transparent"
-                  strokeDasharray={2 * Math.PI * 8}
-                  strokeDashoffset={2 * Math.PI * 8 * (1 - holdingProgress / 100)}
+                  strokeDasharray={2 * Math.PI * 9}
+                  strokeDashoffset={2 * Math.PI * 9 * (1 - holdingProgress / 100)}
                 />
               </svg>
             </div>

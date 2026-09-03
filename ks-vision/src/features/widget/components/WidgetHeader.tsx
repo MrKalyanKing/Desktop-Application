@@ -1,5 +1,5 @@
 import React from 'react';
-import { DragIcon, CloseIcon } from '../../../shared/components/Icon';
+import { Dismiss24Regular, Sparkle24Filled } from '@fluentui/react-icons';
 import { Button } from '../../../shared/components/Button';
 import { widgetService } from '../services/widget.service';
 
@@ -11,26 +11,34 @@ export const WidgetHeader: React.FC = () => {
   return (
     <div
       data-tauri-drag-region
-      className="flex items-center justify-between h-9 px-3 bg-slate-950/40 border-b border-slate-800/30 cursor-move text-slate-400 select-none"
+      className="flex items-center justify-between h-11 px-3 border-b border-white/5 cursor-move select-none shrink-0"
+      style={{ background: 'linear-gradient(90deg, rgba(34,211,238,0.08), rgba(167,139,250,0.08))' }}
     >
-      <div data-tauri-drag-region className="flex items-center gap-1.5 cursor-move">
-        <DragIcon size={12} className="text-slate-500 cursor-move" />
-        <span 
-          data-tauri-drag-region 
-          className="text-[10px] font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400 uppercase cursor-move"
-        >
-          KS Vision
-        </span>
+      <div data-tauri-drag-region className="flex items-center gap-2 cursor-move min-w-0">
+        <div className="h-7 w-7 rounded-lg flex items-center justify-center bg-cyan-400/15 text-cyan-300 ring-1 ring-cyan-400/25">
+          <Sparkle24Filled style={{ fontSize: 16 }} />
+        </div>
+        <div className="flex flex-col leading-tight min-w-0">
+          <span
+            data-tauri-drag-region
+            className="text-[12px] font-semibold tracking-wide text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 via-sky-300 to-violet-300"
+          >
+            KS Vision
+          </span>
+          <span data-tauri-drag-region className="text-[9px] text-slate-500">
+            Drag to move
+          </span>
+        </div>
       </div>
-      
+
       <Button
         variant="ghost"
         size="sm"
         onClick={handleClose}
-        className="h-5 w-5 p-0 hover:bg-slate-800/80 hover:text-slate-100 rounded-md transition-all duration-150 cursor-pointer"
-        title="Hide Widget (Double Escape)"
+        className="h-7 w-7 p-0 rounded-lg hover:bg-rose-500/20 hover:text-rose-300 text-slate-400"
+        title="Hide overlay (double Escape)"
       >
-        <CloseIcon size={11} />
+        <Dismiss24Regular style={{ fontSize: 16 }} />
       </Button>
     </div>
   );

@@ -103,17 +103,16 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
   };
 
   return (
-    <div className="flex flex-col gap-2.5 text-[10px] text-slate-300">
-      {/* Parameters Card */}
-      <div className="flex flex-col gap-1.5 border border-slate-800/30 rounded p-2 bg-slate-950/20">
-        <h4 className="text-[9px] text-cyan-400 font-bold uppercase tracking-wider mb-0.5">Parameters</h4>
+    <div className="ks-settings-page">
+      <div className="ks-settings-card">
+        <h4 className="text-[12px] text-cyan-300 font-semibold uppercase tracking-wide">Parameters</h4>
         
         <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Active Model</label>
+          <label className="ks-settings-label">Active Model</label>
           <select
             value={preferences.ai.activeModel}
             onChange={(e) => updateAI('activeModel', e.target.value)}
-            className="bg-slate-950/80 border border-slate-800/60 rounded px-1.5 py-0.5 text-slate-200 focus:border-cyan-500/50 outline-none cursor-pointer"
+            className="ks-settings-input cursor-pointer"
           >
             {models.length > 0 ? (
               models.map((m: any) => (
@@ -129,7 +128,7 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
 
         <div className="grid grid-cols-2 gap-1.5">
           <div className="flex flex-col gap-0.5">
-            <label className="text-slate-400 font-bold">Temp ({preferences.ai.temperature})</label>
+            <label className="ks-settings-label">Temp ({preferences.ai.temperature})</label>
             <input
               type="range"
               min="0"
@@ -141,17 +140,17 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
             />
           </div>
           <div className="flex flex-col gap-0.5">
-            <label className="text-slate-400 font-bold">Max Tokens</label>
+            <label className="ks-settings-label">Max Tokens</label>
             <input
               type="number"
               value={preferences.ai.maxTokens}
               onChange={(e) => updateAI('maxTokens', parseInt(e.target.value) || 128)}
-              className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 text-center min-w-0"
+              className="ks-settings-input"
             />
           </div>
         </div>
 
-        <label className="flex items-center justify-between cursor-pointer p-1 hover:bg-slate-800/20 rounded select-none">
+        <label className="ks-settings-row cursor-pointer">
           <span>Streaming Mode</span>
           <input 
             type="checkbox"
@@ -161,7 +160,7 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
           />
         </label>
 
-        <label className="flex items-center justify-between cursor-pointer p-1 hover:bg-slate-800/20 rounded select-none">
+        <label className="ks-settings-row cursor-pointer">
           <span>Auto Copy Response</span>
           <input 
             type="checkbox"
@@ -173,16 +172,16 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
       </div>
 
       {/* AI Provider Card */}
-      <div className="flex flex-col gap-1.5 border border-slate-800/30 rounded p-2 bg-slate-950/20">
-        <h4 className="text-[9px] text-cyan-400 font-bold uppercase tracking-wider mb-0.5">AI Provider</h4>
+      <div className="ks-settings-card">
+        <h4 className="text-[12px] text-cyan-300 font-semibold uppercase tracking-wide">AI Provider</h4>
         
         <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Provider</label>
+          <label className="ks-settings-label">Provider</label>
           <select
             value={preferences.aiProvider?.provider || 'Gemini'}
             onChange={(e) => updateProvider('provider', e.target.value)}
             disabled={!isEditing}
-            className="bg-slate-950/80 border border-slate-800/60 rounded px-1.5 py-0.5 text-slate-200 focus:border-cyan-500/50 outline-none cursor-pointer disabled:opacity-50"
+            className="ks-settings-input cursor-pointer disabled:opacity-50"
           >
             <option value="Gemini">Gemini</option>
           </select>
@@ -192,13 +191,13 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
           /* Editable Input Form */
           <>
             <div className="flex flex-col gap-0.5">
-              <label className="text-slate-400 font-bold">Gemini API Key</label>
-              <div className="relative flex items-center">
+              <label className="ks-settings-label">Gemini API Key</label>
+              <div className="relative flex items-center w-full">
                 <input
                   type={showApiKey ? 'text' : 'password'}
                   value={preferences.aiProvider?.apiKey || ''}
                   onChange={(e) => updateProvider('apiKey', e.target.value)}
-                  className="w-full bg-slate-950/85 border border-slate-800/60 rounded pl-1.5 pr-8 py-0.5 outline-none text-slate-200 min-w-0 focus:border-cyan-500/50"
+                  className="ks-settings-input pr-14"
                   placeholder="Enter Gemini API Key..."
                 />
                 <button

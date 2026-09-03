@@ -1,7 +1,26 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { CpuIcon } from '../../../shared/components/Icon';
-import { useWidgetPosition } from '../hooks/useWidgetPosition';
-import { formatPosition } from '../utils/widgetPosition';
+import {
+  Camera24Regular,
+  Search24Regular,
+  Sparkle24Filled,
+  Bot24Regular,
+  Person24Regular,
+  Mic24Filled,
+  MicOff24Regular,
+  Settings24Regular,
+  Clipboard24Regular,
+  CheckmarkCircle24Filled,
+  History24Regular,
+  ArrowUp24Filled,
+  Dismiss24Regular,
+  ArrowLeft24Regular,
+  Delete24Regular,
+  DocumentText24Regular,
+  Code24Regular,
+  Warning24Filled,
+  Image24Regular,
+  Keyboard24Regular,
+} from '@fluentui/react-icons';
 import { AIStatus, AIThinking, useAI } from '../../ai';
 import { CapturePreview, useScreenshot } from '../../screenshot';
 import { useSystemTray } from '../../tray';
@@ -9,21 +28,24 @@ import { SettingsPanel } from '../../settings';
 import { useVoiceAgent } from '../hooks/useVoiceAgent';
 import { ModeToggle } from './ModeToggle';
 import { AudioIntelligenceUI } from './AudioIntelligenceUI';
+import { MarkdownRenderer } from '../../../shared/components/MarkdownRenderer';
+
+const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <kbd className="ks-kbd">{children}</kbd>
+);
 
 export const WidgetContent: React.FC = () => {
-  const position = useWidgetPosition();
-  const [cpuUsage, setCpuUsage] = useState(12);
   const [inputVal, setInputVal] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'chat' | 'history'>('chat');
-  
-  const { 
-    stream, 
-    cancel, 
-    loading, 
-    streaming, 
-    response, 
+
+  const {
+    stream,
+    cancel,
+    loading,
+    streaming,
+    response,
     error,
     currentModel,
     loadHistory,
@@ -40,10 +62,8 @@ export const WidgetContent: React.FC = () => {
     sessionHistory
   } = useAI();
 
-  const { isRecording, isTranscribing, systemQuestion, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
+  const { isRecording, isTranscribing, systemQuestion, usingScreen, captureMode, setCaptureMode, toggleVoice } = useVoiceAgent();
 
-  // Paste the detected system audio question into the input box immediately.
-  // Each new question replaces the previous one so the user always sees the latest.
   useEffect(() => {
     if (systemQuestion) setInputVal(systemQuestion);
   }, [systemQuestion]);
@@ -52,7 +72,7 @@ export const WidgetContent: React.FC = () => {
     step: screenshotStep,
     error: screenshotError
   } = useScreenshot();
-  
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const answerStartRef = useRef<HTMLDivElement>(null);
   const userScrolledAwayRef = useRef(false);
@@ -64,21 +84,6 @@ export const WidgetContent: React.FC = () => {
     onRestartConnection: () => { getModels(); }
   });
 
-  useEffect(() => {
-    // Start freshly: do NOT load database history on mount!
-  }, []);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCpuUsage((prev) => {
-        const delta = Math.floor(Math.random() * 7) - 3;
-        const next = prev + delta;
-        return Math.max(5, Math.min(45, next));
-      });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
   const handleChatScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -86,7 +91,6 @@ export const WidgetContent: React.FC = () => {
     userScrolledAwayRef.current = distFromBottom > 64;
   };
 
-  // When a new answer starts: show the start of that answer once — never chase the end while streaming.
   useEffect(() => {
     const justStarted = loading && !prevLoadingRef.current;
     prevLoadingRef.current = loading;
@@ -99,7 +103,6 @@ export const WidgetContent: React.FC = () => {
       return;
     }
 
-    // Do not auto-jump during token streaming (`response` updates).
     if (streaming || loading) return;
     if (userScrolledAwayRef.current) return;
 
@@ -111,7 +114,7 @@ export const WidgetContent: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputVal.trim() || loading) return;
-    
+
     const query = inputVal.trim();
     setInputVal('');
     try {
@@ -121,71 +124,48 @@ export const WidgetContent: React.FC = () => {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       handleSubmit(e);
     }
   };
 
   const handleExportMd = async () => {
     const data = await exportHistoryMarkdown();
-    if (data) {
-      navigator.clipboard.writeText(data).catch(() => {});
-    }
+    if (data) navigator.clipboard.writeText(data).catch(() => { });
   };
 
   const handleExportJson = async () => {
     const data = await exportHistoryJson();
-    if (data) {
-      navigator.clipboard.writeText(data).catch(() => {});
-    }
+    if (data) navigator.clipboard.writeText(data).catch(() => { });
   };
 
   const getStatusBadge = () => {
     if (isRecording) {
       return (
-        <span className="text-[8px] font-bold text-red-400 bg-red-950/20 px-1.5 py-0.5 rounded border border-red-800/20 animate-pulse select-none">
-          🎤 RECORDING
+        <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold text-rose-300 bg-rose-500/10 px-1.5 py-0 rounded-full border border-rose-400/20 leading-tight">
+          <Mic24Filled style={{ fontSize: 10 }} /> Live
         </span>
       );
     }
-    switch (screenshotStep) {
-      case 'capturing':
-        return (
-          <span className="text-[8px] font-bold text-yellow-400 bg-yellow-950/20 px-1.5 py-0.5 rounded border border-yellow-800/20 animate-pulse select-none">
-            📸 CAPTURING
-          </span>
-        );
-      case 'ocr':
-        return (
-          <span className="text-[8px] font-bold text-orange-400 bg-orange-950/20 px-1.5 py-0.5 rounded border border-orange-800/20 animate-pulse select-none">
-            🔍 EXTRACTING
-          </span>
-        );
-      case 'ai':
-        return (
-          <span className="text-[8px] font-bold text-cyan-400 bg-cyan-950/20 px-1.5 py-0.5 rounded border border-cyan-800/20 animate-pulse select-none">
-            🤖 ANALYSING
-          </span>
-        );
-      case 'done':
-        return (
-          <span className="text-[8px] font-bold text-emerald-400 bg-emerald-950/20 px-1.5 py-0.5 rounded border border-emerald-800/20 select-none">
-            ✅ READY
-          </span>
-        );
-      case 'error':
-        return (
-          <span className="text-[8px] font-bold text-rose-400 bg-rose-950/20 px-1.5 py-0.5 rounded border border-rose-800/20 select-none">
-            ❌ ERROR
-          </span>
-        );
-      default:
-        return null;
+    if (screenshotStep === 'capturing' || screenshotStep === 'ai') {
+      return (
+        <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold text-amber-300 bg-amber-500/10 px-1.5 py-0 rounded-full border border-amber-400/20 leading-tight">
+          <Camera24Regular style={{ fontSize: 10 }} />
+          {screenshotStep === 'capturing' ? 'Capture' : 'Reading'}
+        </span>
+      );
     }
+    if (screenshotStep === 'error') {
+      return (
+        <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold text-rose-300 bg-rose-500/10 px-1.5 py-0 rounded-full border border-rose-400/20 leading-tight">
+          <Warning24Filled style={{ fontSize: 10 }} /> Error
+        </span>
+      );
+    }
+    return null;
   };
-
-  const showAIPanel = true;
 
   const filteredHistory = conversationHistory.filter((msg: any) =>
     msg.content.toLowerCase().includes(searchQuery.toLowerCase())
@@ -193,337 +173,280 @@ export const WidgetContent: React.FC = () => {
 
   if (showSettings) {
     return (
-      <div className="flex-1 p-2 flex flex-col justify-between text-xs bg-slate-900/10 min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col w-full">
         <SettingsPanel onClose={() => setShowSettings(false)} />
       </div>
     );
   }
 
   return (
-    <div className="flex-1 p-2 flex flex-col justify-between text-xs bg-slate-900/10 min-h-0">
-      {/* Top row: AI Status, Context badges, and Position coordinates */}
-      <div className="flex items-center justify-between mb-1 select-none">
-        <div className="flex items-center gap-1.5">
+    <div className="flex-1 min-h-0 px-2.5 pb-2 pt-1.5 flex flex-col text-[12px] overflow-hidden w-full">
+      <div className="flex items-center justify-between mb-1.5 select-none gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 min-w-0 flex-wrap">
           <AIStatus />
           {getStatusBadge()}
-          {/* Active Context Badges */}
           {activeSources.map((src: string) => (
-            <span key={src} className="text-[8px] font-bold text-cyan-400 bg-cyan-950/20 px-1.5 py-0.5 rounded border border-cyan-800/10 animate-pulse select-none">
-              {src === 'Voice' ? '🎤 Voice' : src === 'OCR' ? '📄 OCR' : src}
+            <span key={src} className="inline-flex items-center gap-0.5 text-[8px] font-semibold text-sky-300 bg-sky-500/10 px-1.5 py-0 rounded-full border border-sky-400/20 leading-tight">
+              {src === 'Voice' ? <Mic24Filled style={{ fontSize: 9 }} /> : <Image24Regular style={{ fontSize: 9 }} />}
+              {src}
             </span>
           ))}
-          {showAIPanel && !screenshotStep && activeSources.length === 0 && !isRecording && (
-            <span className="text-[8px] font-mono text-slate-500 bg-slate-950/20 px-1 py-0.5 rounded border border-slate-800/10 max-w-[80px] truncate">
-              {currentModel}
-            </span>
-          )}
         </div>
-        <span className="text-[9px] font-mono text-cyan-400/80 bg-cyan-950/20 px-1.5 py-0.5 rounded border border-cyan-800/10">
-          {formatPosition(position)}
-        </span>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            type="button"
+            onClick={toggleVoice}
+            className={`ks-icon-btn ${isRecording ? 'is-live' : ''}`}
+            title={isRecording ? 'Stop listening' : 'Start voice'}
+          >
+            {isRecording ? <MicOff24Regular style={{ fontSize: 12 }} /> : <Mic24Filled style={{ fontSize: 12 }} />}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowSettings(!showSettings)}
+            className={`ks-icon-btn ${showSettings ? 'is-on' : ''}`}
+            title="Settings"
+          >
+            <Settings24Regular style={{ fontSize: 12 }} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setAutoCopy(!autoCopyClipboard)}
+            className={`ks-icon-btn ${autoCopyClipboard ? 'is-on' : ''}`}
+            title={autoCopyClipboard ? 'Auto-copy on' : 'Auto-copy off'}
+          >
+            {autoCopyClipboard ? (
+              <CheckmarkCircle24Filled style={{ fontSize: 12 }} />
+            ) : (
+              <Clipboard24Regular style={{ fontSize: 12 }} />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setViewMode(viewMode === 'history' ? 'chat' : 'history');
+              if (viewMode !== 'history') loadHistory();
+            }}
+            className={`ks-icon-btn ${viewMode === 'history' ? 'is-on' : ''}`}
+            title="History"
+          >
+            <History24Regular style={{ fontSize: 12 }} />
+          </button>
+        </div>
       </div>
 
-      {/* Center content */}
-      <div className="flex-1 min-h-0 flex flex-col justify-center my-0.5">
-        <div className="flex-1 flex flex-col min-h-0">
-          
-          {viewMode === 'history' ? (
-            /* ========================================================
-               HISTORY VIEW: Complete read-only SQLite database logs
-               ======================================================== */
-            <div className="flex flex-col flex-1 min-h-0">
-              {/* Header and Back Button */}
-              <div className="flex justify-between items-center mb-1.5 border-b border-slate-850/60 pb-1.5 select-none">
-                <span className="text-[10px] font-bold text-cyan-400 tracking-wider">📜 DATABASE LOGS</span>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('chat')}
-                  className="h-5 px-2 bg-slate-950 border border-slate-800 hover:bg-slate-900 text-slate-400 hover:text-cyan-400 text-[8.5px] font-bold rounded cursor-pointer transition-all active:scale-95"
-                >
-                  ← Back to Chat
-                </button>
-              </div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        {viewMode === 'history' ? (
+          <div className="flex flex-col flex-1 min-h-0">
+            <div className="flex justify-between items-center mb-2 select-none">
+              <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-slate-100">
+                <History24Regular style={{ fontSize: 16 }} className="text-cyan-300" />
+                History
+              </span>
+              <button
+                type="button"
+                onClick={() => setViewMode('chat')}
+                className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white text-[11px] font-semibold"
+              >
+                <ArrowLeft24Regular style={{ fontSize: 14 }} />
+                Chat
+              </button>
+            </div>
 
-              {/* Search, Export, and Clear DB Actions */}
-              <div className="flex gap-1 mb-1.5 items-center select-none">
+            <div className="flex gap-1 mb-2 items-center select-none">
+              <div className="flex-1 flex items-center gap-1.5 h-8 px-2 rounded-lg bg-black/30 border border-white/8">
+                <Search24Regular className="text-slate-500" style={{ fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search database logs..."
-                  className="flex-1 h-5 bg-slate-950/60 border border-slate-800/40 rounded px-1.5 py-0.5 text-[9px] text-slate-300 placeholder-slate-500 outline-none focus:border-cyan-500/30"
+                  placeholder="Search…"
+                  className="flex-1 bg-transparent text-[11px] text-slate-200 placeholder-slate-500 outline-none"
                 />
-                <button
-                  type="button"
-                  onClick={handleExportMd}
-                  className="h-5 px-1.5 bg-slate-950/60 border border-slate-800/40 hover:bg-cyan-950/20 text-slate-450 hover:text-cyan-400 text-[8px] font-bold rounded cursor-pointer"
-                  title="Export Markdown"
-                >
-                  MD
-                </button>
-                <button
-                  type="button"
-                  onClick={handleExportJson}
-                  className="h-5 px-1.5 bg-slate-950/60 border border-slate-800/40 hover:bg-cyan-950/20 text-slate-450 hover:text-cyan-400 text-[8px] font-bold rounded cursor-pointer"
-                  title="Export JSON"
-                >
-                  JSON
-                </button>
-                <button
-                  type="button"
-                  onClick={clearHistory}
-                  className="h-5 px-1.5 bg-rose-950/40 border border-rose-900/40 hover:bg-rose-900/60 text-rose-300 text-[8px] font-bold rounded cursor-pointer transition-all active:scale-95"
-                  title="Clear all database history"
-                >
-                  🗑️ Clear
-                </button>
               </div>
-
-              {/* Scroll Container showing Database Logs */}
-              <div 
-                ref={scrollRef}
-                onScroll={handleChatScroll}
-                className="flex-1 overflow-y-auto px-1.5 py-1 bg-slate-950/40 border border-slate-800/40 rounded-lg text-xs leading-relaxed text-slate-300 font-medium select-text"
-              >
-                {filteredHistory.length === 0 && (
-                  <div className="text-center py-6 text-slate-500 text-[9px] select-none">
-                    No database history logs found.
-                  </div>
-                )}
-                {filteredHistory.map((msg: any) => (
-                  <div key={msg.id} className="mb-2 p-1.5 bg-slate-900/30 border border-slate-850/40 rounded-md relative group select-text">
-                    <div className="flex justify-between items-center text-[7.5px] font-bold text-slate-500 mb-0.5 select-none">
-                      <span>{msg.role === 'user' ? 'USER' : 'COPAILOT'} {msg.source ? `[${msg.source}]` : ''}</span>
-                      <button
-                        type="button"
-                        onClick={() => msg.id && deleteMessage(msg.id)}
-                        className="opacity-0 group-hover:opacity-100 hover:text-rose-400 transition-opacity text-[8px] cursor-pointer"
-                        title="Delete this message"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    <div className="whitespace-pre-wrap font-sans text-slate-300 text-xs">
-                      {msg.content}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <button type="button" onClick={handleExportMd} className="ks-icon-btn" title="Copy Markdown">
+                <DocumentText24Regular style={{ fontSize: 15 }} />
+              </button>
+              <button type="button" onClick={handleExportJson} className="ks-icon-btn" title="Copy JSON">
+                <Code24Regular style={{ fontSize: 15 }} />
+              </button>
+              <button type="button" onClick={clearHistory} className="ks-icon-btn hover:text-rose-300" title="Clear history">
+                <Delete24Regular style={{ fontSize: 15 }} />
+              </button>
             </div>
-          ) : (
-            /* ========================================================
-               CHAT VIEW: Session-only live messaging (starts empty)
-               ======================================================== */
-            <div className="flex flex-col flex-1 min-h-0">
-              {/* Audio Intelligence UI Dashboard */}
-              {(isRecording || isTranscribing) && (
-                <AudioIntelligenceUI
-                  isRecording={isRecording}
-                  isTranscribing={isTranscribing}
-                  captureMode={captureMode}
-                />
+
+            <div
+              ref={scrollRef}
+              onScroll={handleChatScroll}
+              className="flex-1 overflow-y-auto px-2 py-2 rounded-xl bg-black/20 border border-white/6 text-slate-300"
+            >
+              {filteredHistory.length === 0 && (
+                <div className="text-center py-8 text-slate-500 text-[11px]">No saved messages yet.</div>
+              )}
+              {filteredHistory.map((msg: any) => (
+                <div key={msg.id} className="mb-2.5 relative group">
+                  <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 mb-1">
+                    <span className="inline-flex items-center gap-1">
+                      {msg.role === 'user' ? <Person24Regular style={{ fontSize: 12 }} /> : <Bot24Regular style={{ fontSize: 12 }} />}
+                      {msg.role === 'user' ? 'You' : 'KS Vision'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => msg.id && deleteMessage(msg.id)}
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400"
+                      title="Delete"
+                    >
+                      <Dismiss24Regular style={{ fontSize: 12 }} />
+                    </button>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-white/4 border border-white/8">
+                    <MarkdownRenderer content={msg.content} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col flex-1 min-h-0 gap-2">
+            {(isRecording || isTranscribing) && (
+              <AudioIntelligenceUI
+                isRecording={isRecording}
+                isTranscribing={isTranscribing}
+                captureMode={captureMode}
+                usingScreen={usingScreen}
+              />
+            )}
+
+            <div
+              ref={scrollRef}
+              onScroll={handleChatScroll}
+              className="flex-1 min-h-0 overflow-y-auto px-2 py-2 rounded-xl bg-black/20 border border-white/6 text-slate-300"
+            >
+              <CapturePreview />
+
+              {sessionHistory.length === 0 && !response && !loading && !error && !screenshotError && (
+                <div className="space-y-3 select-none py-1">
+                  <div className="rounded-2xl p-3 border border-cyan-400/15 bg-gradient-to-br from-cyan-500/10 to-violet-500/10">
+                    <div className="flex items-center gap-2 text-slate-100 font-semibold text-[13px] mb-1">
+                      <Sparkle24Filled className="text-cyan-300" style={{ fontSize: 18 }} />
+                      Ready when you are
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Ask in the box, tap the mic, or capture your screen. Answers stay glanceable.
+                    </p>
+                    {currentModel && (
+                      <p className="text-[10px] text-slate-500 mt-1.5 font-mono truncate">{currentModel}</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-white/8 bg-white/3 p-2.5 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-300 pb-1">
+                      <Keyboard24Regular style={{ fontSize: 14 }} className="text-violet-300" />
+                      Shortcuts
+                    </div>
+                    {[
+                      ['Screen capture', 'Ctrl+Shift+F'],
+                      ['Voice on / off', 'Ctrl+Shift+V'],
+                      ['Show / hide', 'Ctrl+Shift+H'],
+                    ].map(([label, keys]) => (
+                      <div key={keys} className="flex justify-between items-center px-2 py-1.5 rounded-lg bg-black/20">
+                        <span className="text-[11px] text-slate-300">{label}</span>
+                        <Kbd>{keys}</Kbd>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-slate-500 text-center pt-1">Double Escape also hides the overlay.</p>
+                  </div>
+                </div>
               )}
 
-              {/* Chat Scroll Container showing Session messages */}
-              <div 
-                ref={scrollRef}
-                onScroll={handleChatScroll}
-                className="flex-1 overflow-y-auto px-1.5 py-1 bg-slate-950/40 border border-slate-800/40 rounded-lg text-xs leading-relaxed text-slate-300 font-medium select-text"
-              >
-                <CapturePreview />
-
-                {/* If session history is empty and no active response, render the CPU bar and the Quick Guide */}
-                {sessionHistory.length === 0 && !response && !loading && !error && !screenshotError && (
-                  <div className="space-y-3 select-none">
-                    {/* CPU Bar */}
-                    <div className="flex items-center gap-3 bg-slate-950/20 p-2 rounded-lg border border-slate-800/10 my-0.5">
-                      <CpuIcon size={14} className="text-purple-450/80 animate-pulse" />
-                      <div className="flex-1 flex flex-col gap-1">
-                        <div className="flex items-center justify-between text-[9px] font-bold text-slate-400">
-                          <span>CPU AGENT WORKLOAD</span>
-                          <span className="font-mono text-slate-200">{cpuUsage}%</span>
-                        </div>
-                        <div className="h-1.5 w-full bg-slate-800/60 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-gradient-to-r from-cyan-400 to-purple-400 rounded-full transition-all duration-500" 
-                            style={{ width: `${cpuUsage}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Quick Guide Card */}
-                    <div className="bg-slate-900/25 border border-slate-850/40 rounded-lg p-2.5 space-y-2">
-                      <div className="text-[8.5px] font-bold text-cyan-450 tracking-wider uppercase border-b border-slate-800/60 pb-1">
-                        🚀 Quick Action Shortcuts
-                      </div>
-                      <div className="grid grid-cols-1 gap-1.5 text-[9px]">
-                        <div className="flex justify-between items-center bg-slate-950/20 px-2 py-1 rounded border border-slate-800/10">
-                          <span className="text-slate-300">✂️ Snipping Tool (Region Selection)</span>
-                          <kbd className="font-mono bg-slate-950/60 text-cyan-300 border border-slate-800 px-1 py-0.2 rounded text-[8px] font-bold">Ctrl+Shift+R</kbd>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-950/20 px-2 py-1 rounded border border-slate-800/10">
-                          <span className="text-slate-300">🖥️ Capture Full Screen</span>
-                          <kbd className="font-mono bg-slate-950/60 text-cyan-300 border border-slate-800 px-1 py-0.2 rounded text-[8px] font-bold">Ctrl+Shift+F</kbd>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-950/20 px-2 py-1 rounded border border-slate-800/10">
-                          <span className="text-slate-300">🪟 Capture Active Window</span>
-                          <kbd className="font-mono bg-slate-950/60 text-cyan-300 border border-slate-800 px-1 py-0.2 rounded text-[8px] font-bold">Ctrl+Shift+W</kbd>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-950/20 px-2 py-1 rounded border border-slate-800/10">
-                          <span className="text-slate-300">🎤 Toggle Ambient Voice Input</span>
-                          <kbd className="font-mono bg-slate-950/60 text-cyan-300 border border-slate-800 px-1 py-0.2 rounded text-[8px] font-bold">Ctrl+Shift+V</kbd>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-950/20 px-2 py-1 rounded border border-slate-800/10">
-                          <span className="text-slate-300">👁️ Show / Hide Widget Window</span>
-                          <kbd className="font-mono bg-slate-950/60 text-cyan-300 border border-slate-800 px-1 py-0.2 rounded text-[8px] font-bold">Ctrl+Shift+H</kbd>
-                        </div>
-                      </div>
-                      <div className="text-[7.5px] text-slate-500 text-center pt-1 italic">
-                        Tip: Pressing "Escape" twice quickly hides the widget window.
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {(error || screenshotError) && (
-                  <div className="p-1.5 rounded bg-rose-950/30 border border-rose-800/30 text-rose-300 text-[9px] mt-1 select-text">
-                    <div className="font-bold mb-0.5">ERROR: {error?.type || 'SCREENSHOT_ERROR'}</div>
+              {(error || screenshotError) && (
+                <div className="flex gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-400/20 text-rose-200 text-[11px] mt-1">
+                  <Warning24Filled style={{ fontSize: 16 }} className="shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold mb-0.5">Something went wrong</div>
                     {error?.message || screenshotError}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Render dynamic session conversation history logs */}
-                {sessionHistory.map((msg: any) => (
-                  <div key={msg.id} className="mb-2 p-1.5 bg-slate-900/30 border border-slate-850/40 rounded-md relative group select-text">
-                    <div className="flex justify-between items-center text-[7.5px] font-bold text-slate-500 mb-0.5 select-none">
-                      <span>{msg.role === 'user' ? 'USER' : 'COPAILOT'} {msg.source ? `[${msg.source}]` : ''}</span>
-                    </div>
-                    <div className="whitespace-pre-wrap font-sans text-slate-300 text-xs">
-                      {msg.content}
-                    </div>
+              {sessionHistory.map((msg: any) => (
+                <div
+                  key={msg.id}
+                  className={`mb-2.5 p-2.5 rounded-2xl border ${
+                    msg.role === 'user'
+                      ? 'bg-sky-500/8 border-sky-400/15 ml-4'
+                      : 'bg-violet-500/8 border-violet-400/15 mr-2'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold mb-1.5 text-slate-400">
+                    {msg.role === 'user' ? (
+                      <Person24Regular className="text-sky-300" style={{ fontSize: 14 }} />
+                    ) : (
+                      <Bot24Regular className="text-violet-300" style={{ fontSize: 14 }} />
+                    )}
+                    {msg.role === 'user' ? 'You' : 'KS Vision'}
+                    {msg.source ? (
+                      <span className="font-medium text-slate-500">· {msg.source}</span>
+                    ) : null}
                   </div>
-                ))}
-                
-                {loading && response.length === 0 && !error && !screenshotError && (
-                  <div ref={answerStartRef} className="flex items-center justify-center py-2 select-none animate-pulse">
-                    <AIThinking />
+                  <MarkdownRenderer content={msg.content} />
+                </div>
+              ))}
+
+              {loading && response.length === 0 && !error && !screenshotError && (
+                <div ref={answerStartRef} className="flex items-center justify-center py-3">
+                  <AIThinking />
+                </div>
+              )}
+
+              {streaming && response && (
+                <div ref={answerStartRef} className="mb-2.5 p-2.5 rounded-2xl bg-cyan-500/10 border border-cyan-400/25">
+                  <div className="text-[10px] font-semibold text-cyan-300 mb-1.5 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                    Writing…
                   </div>
-                )}
-                
-                {streaming && response && (
-                  <div ref={answerStartRef} className="mb-2 p-1.5 bg-cyan-950/10 border border-cyan-900/20 rounded-md select-text">
-                    <div className="text-[7.5px] font-bold text-cyan-400 mb-0.5 select-none">
-                      COPAILOT (streaming...)
-                    </div>
-                    <div className="whitespace-pre-wrap font-sans text-cyan-200 text-xs">
-                      {response}
-                    </div>
-                  </div>
-                )}
-              </div>
+                  <MarkdownRenderer content={response} />
+                </div>
+              )}
             </div>
-          )}
-
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Audio Capture Mode Toggle */}
       {viewMode === 'chat' && (
-        <div className="mb-1">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-1 w-full select-none shrink-0 min-w-0 pt-1">
+          <div className="relative w-full">
+            <textarea
+              value={inputVal}
+              onChange={(e) => setInputVal(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={loading ? 'Thinking…' : 'Ask anything…'}
+              disabled={loading && !streaming}
+              rows={2}
+              className="w-full h-[44px] resize-none bg-black/45 border border-white/15 rounded-xl pl-2.5 pr-9 py-1.5 text-[11px] leading-snug text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-400/50 focus:ring-2 focus:ring-cyan-400/20 disabled:opacity-50"
+            />
+            {loading ? (
+              <button
+                type="button"
+                onClick={cancel}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 rounded-lg bg-rose-500/25 border border-rose-400/30 text-rose-200 inline-flex items-center justify-center"
+                title="Stop"
+              >
+                <Dismiss24Regular style={{ fontSize: 12 }} />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!inputVal.trim()}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 rounded-lg bg-gradient-to-r from-cyan-500/90 to-violet-500/90 text-white inline-flex items-center justify-center disabled:opacity-30"
+                title="Send"
+              >
+                <ArrowUp24Filled style={{ fontSize: 13 }} />
+              </button>
+            )}
+          </div>
+
           <ModeToggle mode={captureMode} onChange={setCaptureMode} disabled={isTranscribing} />
-        </div>
-      )}
-
-      {/* Bottom row */}
-      {viewMode === 'chat' && (
-        <form onSubmit={handleSubmit} className="flex gap-1 items-center mt-1 select-none">
-          <input 
-            type="text"
-            value={inputVal}
-            onChange={(e) => setInputVal(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={loading ? "Generating response..." : "Ask Copilot..."}
-            disabled={loading && !streaming}
-            className="flex-1 h-6 bg-slate-950/50 border border-slate-800/60 rounded-md px-2 py-0.5 text-[10px] text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/40 disabled:opacity-50 transition-all min-w-0"
-          />
-
-          {/* Toggle Voice Recording */}
-          <button
-            type="button"
-            onClick={toggleVoice}
-            className={`h-6 w-6 flex items-center justify-center border rounded-md text-[9px] font-bold transition-all active:scale-95 cursor-pointer ${
-              isRecording 
-                ? 'bg-red-950 border-red-800/40 text-red-400 animate-pulse' 
-                : 'bg-slate-950/40 border-slate-800/40 text-slate-400 hover:text-cyan-450 hover:border-cyan-800/40'
-            }`}
-            title={
-              isRecording
-                ? 'Stop voice listening'
-                : `Start voice listening (${captureMode})`
-            }
-          >
-            🎤
-          </button>
-
-          {/* Toggle Settings Gear */}
-          <button
-            type="button"
-            onClick={() => setShowSettings(!showSettings)}
-            className={`h-6 w-6 flex items-center justify-center border rounded-md text-[9px] font-bold transition-all active:scale-95 cursor-pointer ${
-              showSettings 
-                ? 'bg-cyan-950 border-cyan-800/40 text-cyan-300' 
-                : 'bg-slate-950/40 border-slate-800/40 text-slate-400'
-            }`}
-            title="Open preferences"
-          >
-            ⚙️
-          </button>
-
-          {/* Toggle Auto Copy */}
-          <button
-            type="button"
-            onClick={() => setAutoCopy(!autoCopyClipboard)}
-            className={`h-6 w-6 flex items-center justify-center border rounded-md text-[9px] font-bold transition-all active:scale-95 cursor-pointer ${
-              autoCopyClipboard 
-                ? 'bg-cyan-950/40 border-cyan-800/40 text-cyan-300' 
-                : 'bg-slate-950/40 border-slate-800/40 text-slate-500'
-            }`}
-            title={autoCopyClipboard ? "Auto-copy active" : "Auto-copy disabled"}
-          >
-            📋
-          </button>
-
-          {/* Toggle History Tab */}
-          <button
-            type="button"
-            onClick={() => {
-              setViewMode('history');
-              loadHistory();
-            }}
-            className="h-6 w-6 flex items-center justify-center bg-slate-950/40 border border-slate-800/40 hover:bg-cyan-950/20 hover:border-cyan-850 text-slate-400 hover:text-cyan-400 text-[9px] font-bold rounded-md cursor-pointer transition-all active:scale-95"
-            title="Open database history logs"
-          >
-            📜
-          </button>
-          
-          {loading ? (
-            <button
-              type="button"
-              onClick={cancel}
-              className="h-6 px-2 bg-rose-950/40 border border-rose-800/40 hover:bg-rose-900/40 text-rose-300 text-[9px] font-bold rounded-md cursor-pointer transition-all active:scale-95 whitespace-nowrap"
-            >
-              Cancel
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!inputVal.trim()}
-              className="h-6 px-2.5 bg-cyan-950/40 border border-cyan-800/40 hover:bg-cyan-900/40 text-cyan-300 text-[9px] font-bold rounded-md cursor-pointer disabled:opacity-30 transition-all active:scale-95 disabled:pointer-events-none"
-            >
-              Send
-            </button>
-          )}
         </form>
       )}
     </div>

@@ -14,7 +14,7 @@ export const HotkeySettingsView: React.FC<SubProps> = ({ preferences, onChange }
     const isDuplicate = allKeys.some(([_, val]) => val.toLowerCase() === value.toLowerCase());
 
     if (isDuplicate && value.trim() !== '') {
-      setDuplicateError(`Shortcut "${value}" is already mapped!`);
+      setDuplicateError(`Shortcut "${value}" is already mapped.`);
     } else {
       setDuplicateError(null);
     }
@@ -28,84 +28,35 @@ export const HotkeySettingsView: React.FC<SubProps> = ({ preferences, onChange }
     });
   };
 
+  const fields: { key: keyof AppSettings['hotkeys']; label: string }[] = [
+    { key: 'voice', label: 'Voice input' },
+    { key: 'screenshot', label: 'Screenshot' },
+    { key: 'regionCapture', label: 'Region crop' },
+    { key: 'fullScreen', label: 'Fullscreen' },
+    { key: 'scrollCapture', label: 'Scroll capture' },
+    { key: 'toggleWidget', label: 'Toggle widget' },
+    { key: 'emergencyHide', label: 'Emergency hide' },
+  ];
+
   return (
-    <div className="flex flex-col gap-1 text-[10px] text-slate-300">
+    <div className="ks-settings-page">
       {duplicateError && (
-        <div className="text-rose-400 font-bold bg-rose-950/20 border border-rose-900/40 p-1 rounded text-[9px] mb-1 select-none">
-          ⚠️ {duplicateError}
+        <div className="text-rose-300 font-semibold bg-rose-950/30 border border-rose-800/40 p-2.5 rounded-xl text-[12px]">
+          {duplicateError}
         </div>
       )}
-
-      <div className="grid grid-cols-2 gap-1.5 max-h-[140px] overflow-y-auto pr-1">
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Voice Input</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.voice}
-            onChange={(e) => updateHotkey('voice', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
-
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Screenshot</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.screenshot}
-            onChange={(e) => updateHotkey('screenshot', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
-
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Region Crop</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.regionCapture}
-            onChange={(e) => updateHotkey('regionCapture', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
-
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Fullscreen</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.fullScreen}
-            onChange={(e) => updateHotkey('fullScreen', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
-
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Scroll Capture</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.scrollCapture}
-            onChange={(e) => updateHotkey('scrollCapture', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
-
-        <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Toggle Widget</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.toggleWidget}
-            onChange={(e) => updateHotkey('toggleWidget', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
-
-        <div className="flex flex-col gap-0.5 col-span-2">
-          <label className="text-slate-400 font-bold">Emergency Hide</label>
-          <input
-            type="text"
-            value={preferences.hotkeys.emergencyHide}
-            onChange={(e) => updateHotkey('emergencyHide', e.target.value)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 font-mono text-[9px]"
-          />
-        </div>
+      <div className="ks-settings-card">
+        {fields.map((f) => (
+          <div key={f.key} className="flex flex-col gap-1 w-full">
+            <label className="ks-settings-label">{f.label}</label>
+            <input
+              type="text"
+              value={preferences.hotkeys[f.key]}
+              onChange={(e) => updateHotkey(f.key, e.target.value)}
+              className="ks-settings-input font-mono"
+            />
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -98,7 +98,7 @@ impl VADEngine {
 
     /// Process a 30ms frame of mono samples at 16kHz (480 samples).
     /// Returns true if a boundary (end of utterance) is detected.
-    pub fn process_frame(&self, frame: &[f32], recent_speech_samples: &[f32]) -> (VadState, bool) {
+    pub fn process_frame(&self, frame: &[f32], _recent_speech_samples: &[f32]) -> (VadState, bool) {
         if frame.is_empty() {
             return (self.get_state(), false);
         }
@@ -121,8 +121,8 @@ impl VADEngine {
         let mut next_state = current_state;
         let mut trigger_boundary = false;
 
-        // Safety cap only — prefer natural silence endpointing.
-        let max_speech_ms: u32 = if system { 22_000 } else { 25_000 };
+        // Hard max so clips stay small (~12s) for fast Gemini uploads.
+        let max_speech_ms: u32 = if system { 12_000 } else { 12_000 };
 
         match current_state {
             VadState::Silent => {
@@ -170,15 +170,8 @@ impl VADEngine {
                     let new_silence = prev_silence + 30;
                     self.silence_duration_ms.store(new_silence, Ordering::Relaxed);
 
-                    let is_question_incomplete = is_pitch_rising(recent_speech_samples, 16000);
-                    // Longer hangover = fewer mid-sentence cuts = fewer SKIP'd API calls.
-                    let timeout_ms = if system {
-                        if is_question_incomplete { 1_800 } else { 1_400 }
-                    } else if is_question_incomplete {
-                        1_600
-                    } else {
-                        1_300
-                    };
+                    // Short hangover for low speech-end latency (energy VAD only).
+                    let timeout_ms: u32 = if system { 400 } else { 280 };
 
                     if new_silence >= timeout_ms {
                         next_state = VadState::Silent;
@@ -243,30 +236,5 @@ pub fn estimate_pitch(samples: &[f32], sample_rate: u32) -> Option<f32> {
         Some(sample_rate as f32 / best_lag as f32)
     } else {
         None
-    }
-}
-
-pub fn is_pitch_rising(samples: &[f32], sample_rate: u32) -> bool {
-    let n = samples.len();
-    if n < 3200 {
-        return false;
-    }
-
-    let chunk_size = 800;
-    let mut pitches = Vec::new();
-    for i in 0..4 {
-        let start = i * chunk_size;
-        let end = start + chunk_size;
-        if let Some(pitch) = estimate_pitch(&samples[start..end], sample_rate) {
-            pitches.push(pitch);
-        }
-    }
-
-    if pitches.len() >= 2 {
-        let first = pitches[0];
-        let last = pitches[pitches.len() - 1];
-        last > first * 1.05
-    } else {
-        false
     }
 }

@@ -1,4 +1,4 @@
-mod modules;
+pub mod modules;
 
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -94,6 +94,7 @@ pub fn run() {
       modules::screenshot::commands::capture_region_cmd,
       modules::screenshot::commands::start_scroll_capture_cmd,
       modules::screenshot::commands::open_region_selector_cmd,
+      modules::screenshot::commands::analyze_screenshot_cmd,
       modules::ocr::commands::perform_ocr_cmd,
       modules::ai::commands::db_save_message_cmd,
       modules::ai::commands::db_load_history_cmd,

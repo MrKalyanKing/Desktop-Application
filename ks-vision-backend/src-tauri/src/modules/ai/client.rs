@@ -120,8 +120,6 @@ impl GeminiClient {
         let models = manager
             .known_models()
             .into_iter()
-            // Keep UI on primary cost/speed tier (exclude text-only safety net).
-            .filter(|id| id != "gemini-2.0-flash-lite")
             .map(|id| {
                 let name = id
                     .replace("gemini-", "Gemini ")
@@ -336,8 +334,8 @@ impl GeminiClient {
         let mut tried: HashSet<String> = HashSet::new();
         let mut last_err = String::from("No Gemini model available");
         let mut logged_selection = false;
-        let mut selected_model = String::new();
-        let mut stream_started = std::time::Instant::now();
+        let mut selected_model;
+        let mut stream_started;
 
         let response = loop {
             let Some(active_model) =

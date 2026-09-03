@@ -1,4 +1,14 @@
 import React, { useState } from 'react';
+import {
+  Settings24Regular,
+  Bot24Regular,
+  Mic24Regular,
+  Square24Regular,
+  Keyboard24Regular,
+  Dismiss24Regular,
+  Checkmark24Filled,
+  Apps24Regular,
+} from '@fluentui/react-icons';
 import { useSettings } from '../hooks/useSettings';
 import { GeneralSettings } from './GeneralSettings';
 import { AISettingsView } from './AISettings';
@@ -13,6 +23,14 @@ interface SettingsPanelProps {
 
 type TabType = 'general' | 'ai' | 'voice' | 'widget' | 'hotkeys';
 
+const TABS: { id: TabType; label: string; icon: React.ReactNode }[] = [
+  { id: 'general', label: 'General', icon: <Apps24Regular style={{ fontSize: 14 }} /> },
+  { id: 'ai', label: 'AI', icon: <Bot24Regular style={{ fontSize: 14 }} /> },
+  { id: 'voice', label: 'Voice', icon: <Mic24Regular style={{ fontSize: 14 }} /> },
+  { id: 'widget', label: 'Widget', icon: <Square24Regular style={{ fontSize: 14 }} /> },
+  { id: 'hotkeys', label: 'Keys', icon: <Keyboard24Regular style={{ fontSize: 14 }} /> },
+];
+
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
   const { preferences, saveSettings, loading } = useSettings();
   const [activeTab, setActiveTab] = useState<TabType>('general');
@@ -26,8 +44,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
 
   if (!editedPrefs) {
     return (
-      <div className="flex-1 flex items-center justify-center text-[10px] text-slate-400 select-none">
-        Loading settings...
+      <div className="flex-1 flex items-center justify-center text-[13px] text-slate-400">
+        Loading settings…
       </div>
     );
   }
@@ -53,46 +71,52 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
   };
 
   return (
-    <div className="flex-1 flex flex-col justify-between text-xs bg-slate-900/40 p-2 min-h-0 select-none">
-      {/* Tab headers */}
-      <div className="flex gap-1 border-b border-slate-800/40 pb-1 mb-1">
-        {(['general', 'ai', 'voice', 'widget', 'hotkeys'] as TabType[]).map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => setActiveTab(tab)}
-            className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase transition-all ${
-              activeTab === tab 
-                ? 'bg-cyan-950 text-cyan-400 border border-cyan-800/30' 
-                : 'text-slate-400 hover:bg-slate-800/30'
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
+    <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden">
+      <div className="shrink-0 px-3 pt-2 pb-2 border-b border-white/10">
+        <div className="flex items-center gap-2 mb-2">
+          <Settings24Regular className="text-cyan-300" style={{ fontSize: 18 }} />
+          <span className="text-[15px] font-semibold text-slate-100">Settings</span>
+        </div>
+        <div className="flex gap-1 overflow-x-auto">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1 px-2.5 py-2 rounded-lg text-[12px] font-semibold whitespace-nowrap ${
+                activeTab === tab.id
+                  ? 'bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-400/25'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Tab body */}
-      <div className="flex-1 min-h-0 overflow-y-auto py-1">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 w-full">
         {renderTabContent()}
       </div>
 
-      {/* Action buttons */}
-      <div className="flex justify-end gap-1.5 pt-1.5 border-t border-slate-800/40 mt-1">
+      <div className="shrink-0 flex justify-end gap-2 px-3 py-2.5 border-t border-white/10 bg-[rgba(12,16,32,0.98)]">
         <button
           type="button"
           onClick={onClose}
-          className="px-2 py-0.5 bg-slate-950/50 hover:bg-slate-900 border border-slate-800/60 rounded text-[9px] text-slate-300 font-bold active:scale-95 transition-all"
+          className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[12px] text-slate-300 font-semibold"
         >
+          <Dismiss24Regular style={{ fontSize: 14 }} />
           Cancel
         </button>
         <button
           type="button"
           disabled={loading}
           onClick={handleSave}
-          className="px-2.5 py-0.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800/50 rounded text-[9px] text-cyan-300 font-bold active:scale-95 transition-all disabled:opacity-50"
+          className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-cyan-400/20 hover:bg-cyan-400/30 border border-cyan-400/30 text-[12px] text-cyan-100 font-semibold disabled:opacity-50"
         >
-          {loading ? 'Saving...' : 'Save'}
+          <Checkmark24Filled style={{ fontSize: 14 }} />
+          {loading ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>

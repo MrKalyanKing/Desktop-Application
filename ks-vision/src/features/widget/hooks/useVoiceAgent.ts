@@ -14,14 +14,18 @@ export const useVoiceAgent = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState('');
-  // The question detected from system audio — updated each time new audio is heard.
-  // WidgetContent reads this and pastes it into the input box immediately.
   const [systemQuestion, setSystemQuestion] = useState('');
+  const [usingScreen, setUsingScreen] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<'idle' | 'listening' | 'thinking' | 'streaming'>('idle');
   const [captureMode, setCaptureModeState] = useState<CaptureMode>('mic');
-  const { presentVoiceAnswer, cancel, setError } = useAI();
+  const { presentVoiceAnswer, presentVoicePartial, cancel, setError } = useAI();
   const cancelRef = useRef(cancel);
   const presentRef = useRef(presentVoiceAnswer);
+  const partialRef = useRef(presentVoicePartial);
   const setErrorRef = useRef(setError);
+  const lastVoiceTextRef = useRef<string>('');
+  const streamRequestRef = useRef<string>('');
+  const voicePhaseRef = useRef<'idle' | 'listening' | 'thinking' | 'streaming'>('idle');
 
   useEffect(() => {
     cancelRef.current = cancel;
@@ -30,6 +34,10 @@ export const useVoiceAgent = () => {
   useEffect(() => {
     presentRef.current = presentVoiceAnswer;
   }, [presentVoiceAnswer]);
+
+  useEffect(() => {
+    partialRef.current = presentVoicePartial;
+  }, [presentVoicePartial]);
 
   useEffect(() => {
     setErrorRef.current = setError;
@@ -71,6 +79,8 @@ export const useVoiceAgent = () => {
   const stopListening = async () => {
     setIsRecording(false);
     setIsTranscribing(false);
+    setVoicePhase('idle');
+    setUsingScreen(false);
     try {
       await invoke<string>('stop_audio_capture');
     } catch (err: any) {
@@ -154,10 +164,45 @@ export const useVoiceAgent = () => {
     const unlisteners: Promise<() => void>[] = [];
 
     unlisteners.push(
+      listen<{ requestId: string; usingScreen?: boolean }>('voice-gemini-started', (event) => {
+        streamRequestRef.current = event.payload?.requestId || '';
+        lastVoiceTextRef.current = '';
+        voicePhaseRef.current = 'thinking';
+        setIsTranscribing(true);
+        setVoicePhase('thinking');
+        setTranscript('Thinking…');
+        setUsingScreen(!!event.payload?.usingScreen);
+      })
+    );
+
+    unlisteners.push(
+      listen<{
+        requestId: string;
+        text: string;
+        partial?: boolean;
+        usingScreen?: boolean;
+      }>('voice-gemini-chunk', (event) => {
+        const text = event.payload?.text?.trim();
+        if (!text) return;
+        setIsTranscribing(true);
+        voicePhaseRef.current = 'streaming';
+        setVoicePhase('streaming');
+        setTranscript('Streaming…');
+        if (event.payload?.usingScreen) setUsingScreen(true);
+        lastVoiceTextRef.current = text;
+        partialRef.current?.(text);
+      })
+    );
+
+    unlisteners.push(
       listen<{ answer: string; source: string }>('voice-gemini-answer', (event) => {
-        const answer = event.payload?.answer;
+        const answer = event.payload?.answer?.trim();
+        setIsTranscribing(false);
+        voicePhaseRef.current = 'idle';
+        setVoicePhase('idle');
+        setTranscript('');
         if (answer && presentRef.current) {
-          setIsTranscribing(false);
+          lastVoiceTextRef.current = answer;
           presentRef.current(answer, event.payload.source);
         }
       })
@@ -166,6 +211,9 @@ export const useVoiceAgent = () => {
     unlisteners.push(
       listen<{ message: string; source: string }>('voice-gemini-error', (event) => {
         setIsTranscribing(false);
+        voicePhaseRef.current = 'idle';
+        setVoicePhase('idle');
+        setTranscript('');
         setErrorRef.current?.({
           type: 'GENERAL_ERROR',
           message: event.payload?.message || 'Voice Gemini request failed',
@@ -192,10 +240,17 @@ export const useVoiceAgent = () => {
       listen('audio-state-changed', (event: any) => {
         const state = event.payload?.state;
         if (state === 'listening' || state === 'holding') {
+          voicePhaseRef.current = 'listening';
           setIsTranscribing(true);
-          setTranscript('Listening…');
+          setVoicePhase('listening');
+          setTranscript(state === 'holding' ? 'End of speech…' : 'Listening…');
         } else if (state === 'idle') {
+          if (voicePhaseRef.current === 'thinking' || voicePhaseRef.current === 'streaming') {
+            return;
+          }
           setIsTranscribing(false);
+          voicePhaseRef.current = 'idle';
+          setVoicePhase('idle');
         }
       })
     );
@@ -223,8 +278,9 @@ export const useVoiceAgent = () => {
     isRecording,
     isTranscribing,
     transcript,
-    // Updated whenever system audio detects a new question — paste directly into input box.
     systemQuestion,
+    usingScreen,
+    voicePhase,
     captureMode,
     setCaptureMode: changeCaptureMode,
     toggleVoice: toggleVoiceDirect,

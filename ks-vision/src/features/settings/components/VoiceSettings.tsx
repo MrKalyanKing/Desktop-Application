@@ -18,35 +18,31 @@ export const VoiceSettingsView: React.FC<SubProps> = ({ preferences, onChange })
   };
 
   return (
-    <div className="flex flex-col gap-1.5 text-[10px] text-slate-300">
-      <div className="flex flex-col gap-0.5">
-        <label className="text-slate-400 font-bold">Input Device</label>
+    <div className="ks-settings-page">
+      <div className="ks-settings-card">
+        <label className="ks-settings-label">Input device</label>
         <select
           value={preferences.voice.inputDevice}
           onChange={(e) => updateVoice('inputDevice', e.target.value)}
-          className="bg-slate-950/80 border border-slate-800/60 rounded px-1.5 py-0.5 text-slate-200 focus:border-cyan-500/50 outline-none cursor-pointer"
+          className="ks-settings-input cursor-pointer"
         >
-          <option value="default">Default System Microphone</option>
+          <option value="default">Default system microphone</option>
         </select>
-      </div>
 
-      <div className="flex flex-col gap-0.5">
-          <label className="text-slate-400 font-bold">Silence Timeout (ms)</label>
-          <input
-            type="number"
-            value={preferences.voice.silenceTimeout}
-            onChange={(e) => updateVoice('silenceTimeout', parseInt(e.target.value) || 2000)}
-            className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 min-w-0"
-          />
-        </div>
+        <label className="ks-settings-label">Silence timeout (ms)</label>
+        <input
+          type="number"
+          value={preferences.voice.silenceTimeout}
+          onChange={(e) => updateVoice('silenceTimeout', parseInt(e.target.value) || 2000)}
+          className="ks-settings-input"
+        />
 
-      <div className="flex flex-col gap-0.5">
-        <label className="text-slate-400 font-bold">PTT Shortcut</label>
+        <label className="ks-settings-label">Push-to-talk shortcut</label>
         <input
           type="text"
           value={preferences.voice.pushToTalkShortcut}
           onChange={(e) => updateVoice('pushToTalkShortcut', e.target.value)}
-          className="bg-slate-950/85 border border-slate-800/60 rounded px-1.5 py-0.5 outline-none text-slate-200 min-w-0 font-mono text-[9px]"
+          className="ks-settings-input font-mono"
         />
       </div>
     </div>
