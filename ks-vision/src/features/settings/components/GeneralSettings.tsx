@@ -1,5 +1,6 @@
 import React from 'react';
 import type { AppSettings } from '../types/settings.types';
+import { GlassToggle } from '../../../shared/components/glass';
 
 interface SubProps {
   preferences: AppSettings;
@@ -9,25 +10,21 @@ interface SubProps {
 export const GeneralSettings: React.FC<SubProps> = ({ preferences, onChange }) => {
   return (
     <div className="ks-settings-page">
-      <div className="ks-settings-card">
-        <label className="ks-settings-row cursor-pointer">
-          <span>Launch on startup</span>
-          <input
-            type="checkbox"
+      <div className="lg-stack">
+        <div className="lg-row">
+          <span className="lg-row-label">Launch on startup</span>
+          <GlassToggle
             checked={preferences.launchOnStartup || false}
-            onChange={(e) => onChange({ ...preferences, launchOnStartup: e.target.checked })}
-            className="accent-cyan-500 h-4 w-4"
+            onChange={(checked) => onChange({ ...preferences, launchOnStartup: checked })}
           />
-        </label>
-        <label className="ks-settings-row cursor-pointer">
-          <span>Start minimized</span>
-          <input
-            type="checkbox"
+        </div>
+        <div className="lg-row">
+          <span className="lg-row-label">Start minimized</span>
+          <GlassToggle
             checked={preferences.startupMinimized || false}
-            onChange={(e) => onChange({ ...preferences, startupMinimized: e.target.checked })}
-            className="accent-cyan-500 h-4 w-4"
+            onChange={(checked) => onChange({ ...preferences, startupMinimized: checked })}
           />
-        </label>
+        </div>
       </div>
     </div>
   );

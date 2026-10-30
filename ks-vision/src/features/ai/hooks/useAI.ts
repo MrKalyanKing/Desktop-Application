@@ -1,4 +1,4 @@
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector, useStore } from 'react-redux';
 import { invoke } from '@tauri-apps/api/core';
 import { 
   setCurrentModel, 
@@ -23,9 +23,11 @@ import { SYSTEM_PROMPT } from '../services/prompt.service';
 import { conversationService } from '../conversation/conversation.service';
 import { memoryManager } from '../conversation/memoryManager';
 import type { PromptContext, AIError } from '../types/ai.types';
+import { opsService } from '../../hotkeys/services/ops.service';
 
 export const useAI = () => {
   const dispatch = useDispatch();
+  const store = useStore();
   const currentModel = useSelector((state: any) => state.ai.currentModel);
   const status = useSelector((state: any) => state.ai.status);
   const loading = useSelector((state: any) => state.ai.loading);
@@ -236,29 +238,37 @@ export const useAI = () => {
     system?: string,
     options?: { temperature?: number; num_predict?: number }
   ): Promise<void> => {
+    // Registry id first, so F3 can cancel this question even while the model is verified.
+    let opId: number | null = null;
+    try {
+      opId = await opsService.begin('typed');
+    } catch {
+      // registry unavailable: the stream still works, it just can't be cancelled by F3
+    }
+    const requestId = opId != null ? String(opId) : crypto.randomUUID();
+
     dispatch(setError(null));
     dispatch(setLastResponse(''));
 
-    const isReady = await verifyServerAndModel();
-    if (!isReady) {
-      return;
-    }
-
-    const requestId = crypto.randomUUID();
-    dispatch(setLoading(true));
-    dispatch(setStreaming(true));
-    dispatch(setActiveRequestId(requestId));
-
-    if (context.ocrText && context.ocrText.trim().length > 0) {
-      memoryManager.setOcrText(context.ocrText);
-      dispatch(addActiveSource('OCR'));
-    }
-    if (context.voiceText && context.voiceText.trim().length > 0) {
-      memoryManager.setVoiceText(context.voiceText);
-      dispatch(addActiveSource('Voice'));
-    }
-
     try {
+      const isReady = await verifyServerAndModel();
+      if (!isReady || opsService.isCancelled(opId)) {
+        return;
+      }
+
+      dispatch(setLoading(true));
+      dispatch(setStreaming(true));
+      dispatch(setActiveRequestId(requestId));
+
+      if (context.ocrText && context.ocrText.trim().length > 0) {
+        memoryManager.setOcrText(context.ocrText);
+        dispatch(addActiveSource('OCR'));
+      }
+      if (context.voiceText && context.voiceText.trim().length > 0) {
+        memoryManager.setVoiceText(context.voiceText);
+        dispatch(addActiveSource('Voice'));
+      }
+
       const history = await conversationService.loadHistory(4);
       const activeContext = memoryManager.getContext();
       const contextWithHistory = { ...activeContext, chatHistory: history };
@@ -273,10 +283,14 @@ export const useAI = () => {
         options,
         undefined,
         (chunk) => {
+          if (opsService.isCancelled(opId)) return;
           accumulated += chunk;
           handleChunk(chunk);
         }
       );
+
+      // Cancelled after the last chunk: never save, show, copy or cache it.
+      if (opsService.isCancelled(opId)) return;
 
       // Save user & assistant logs to database on stream complete
       await conversationService.saveMessage('user', prompt, 'chat');
@@ -284,6 +298,7 @@ export const useAI = () => {
 
       dispatch(addSessionMessage({ role: 'user', content: prompt, id: Date.now(), timestamp: Date.now() }));
       dispatch(addSessionMessage({ role: 'assistant', content: accumulated, id: Date.now() + 1, timestamp: Date.now() }));
+      opsService.setLastAnswer(opId, accumulated);
 
       if (autoCopyClipboard) {
         navigator.clipboard.writeText(accumulated).catch(e => {
@@ -295,15 +310,22 @@ export const useAI = () => {
       dispatch(setStatus('connected'));
     } catch (err: any) {
       const aiErr = aiService.mapError(err);
+      if (aiErr.type === 'REQUEST_CANCELLED' || opsService.isCancelled(opId)) {
+        return; // stopped on purpose: no error card
+      }
       dispatch(setError(aiErr));
       if (aiErr.type === 'SERVER_UNAVAILABLE') {
         dispatch(setStatus('disconnected'));
       }
       throw aiErr;
     } finally {
-      dispatch(setLoading(false));
-      dispatch(setStreaming(false));
-      dispatch(setActiveRequestId(null));
+      opsService.end(opId);
+      // Only clear loading if no newer request has taken over.
+      if ((store.getState() as any).ai.activeRequestId === requestId) {
+        dispatch(setLoading(false));
+        dispatch(setStreaming(false));
+        dispatch(setActiveRequestId(null));
+      }
     }
   };
 
@@ -317,9 +339,9 @@ export const useAI = () => {
   };
 
   /** Stream partial Gemini voice text into the overlay (do not persist until final). */
-  const presentVoicePartial = (answer: string) => {
+  const presentVoicePartial = (answer: string, opId?: number) => {
     const text = answer.trim();
-    if (!text) return;
+    if (!text || opsService.isCancelled(opId)) return;
     dispatch(setError(null));
     dispatch(setLoading(false));
     dispatch(setStreaming(true));
@@ -328,9 +350,14 @@ export const useAI = () => {
   };
 
   /** Present a direct Gemini voice answer (no STT / no re-prompt). */
-  const presentVoiceAnswer = async (answer: string, source?: string) => {
+  const presentVoiceAnswer = async (
+    answer: string,
+    source?: string,
+    opId?: number,
+    meta?: { question?: string; latencyMs?: number }
+  ) => {
     const text = answer.trim();
-    if (!text) return;
+    if (!text || opsService.isCancelled(opId)) return;
 
     dispatch(setError(null));
     dispatch(setLoading(false));
@@ -343,10 +370,17 @@ export const useAI = () => {
         id: Date.now(),
         source: source || 'voice',
         timestamp: Date.now(),
+        question: meta?.question,
+        latencyMs: meta?.latencyMs,
       })
     );
 
+    opsService.setLastAnswer(opId, text);
+
     try {
+      if (meta?.question) {
+        await conversationService.saveMessage('user', meta.question, source || 'voice');
+      }
       await conversationService.saveMessage('assistant', text, source || 'voice');
     } catch {
       // non-fatal

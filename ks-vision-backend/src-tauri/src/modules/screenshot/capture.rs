@@ -169,7 +169,7 @@ pub fn capture_region_reliable(x: i32, y: i32, w: u32, h: u32) -> Result<Vec<u8>
     })
 }
 
-fn image_to_jpeg(img: image::RgbaImage) -> Result<Vec<u8>, String> {
+pub fn image_to_jpeg(img: image::RgbaImage) -> Result<Vec<u8>, String> {
     let dynimg = image::DynamicImage::ImageRgba8(img);
     let dynimg = if dynimg.width() > 1280 || dynimg.height() > 1280 {
         dynimg.resize(1280, 1280, image::imageops::FilterType::Triangle)

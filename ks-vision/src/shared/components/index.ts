@@ -4,3 +4,4 @@ export * from './Icon';
 export * from './Portal';
 export * from './Loader';
 export * from './Tooltip';
+export * from './glass';

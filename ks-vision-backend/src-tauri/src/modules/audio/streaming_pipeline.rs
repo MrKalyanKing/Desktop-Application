@@ -1,26 +1,48 @@
 //! Streaming speech worker.
-//! One spoken sentence → one Gemini request; new speech cancels the previous stream.
+//! The segmenter cuts complete utterances; each becomes one Gemini request.
+//! A continuation (question resumed after a pause) cancels the in-flight request
+//! and re-asks with the whole question, so the model never answers half of it.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
 use crate::modules::audio::capture_engine::{AudioSource, CaptureEngine};
-use crate::modules::audio::chunk_optimizer::ChunkOptimizer;
 use crate::modules::audio::lock_free_ring::SpscAudioRing;
-use crate::modules::audio::rnnoise_processor::RnnoiseProcessor;
-use crate::modules::audio::streaming_agc::StreamingAgc;
-use crate::modules::audio::vad_engine::{VadProfile, VadState, VADEngine};
+use crate::modules::audio::segmenter::{SegEvent, Segmenter, SignalStats, Utterance, SAMPLE_RATE};
+use crate::modules::audio::vad_engine::{VadProfile, VadState};
 use crate::modules::cognition::state_manager::ConversationStateManager;
+use crate::modules::shortcuts::ops::{OpKind, OpRegistry};
 use crate::modules::transcription::gemini_voice;
 
-const CLEAN_CAP_SAMPLES: usize = 12 * 16_000;
-const SPEECH_LEAD_PAD: usize = 6_400;
-const HARD_MIN_SAMPLES: usize = 8_000;
 const JOB_WATCHDOG: Duration = Duration::from_secs(25);
+const TICK: Duration = Duration::from_millis(20);
+/// No packets for this long → feed silence so open utterances still end.
+const STARVED_AFTER: Duration = Duration::from_millis(120);
+const NO_SIGNAL_AFTER: Duration = Duration::from_secs(2);
+const HEALTH_EVERY: Duration = Duration::from_millis(250);
+const PREWARM_EVERY: Duration = Duration::from_secs(60);
+/// 5 s of per-tick level history for health classification.
+const HEALTH_WINDOW: usize = 250;
+
+/// Last time (unix ms) the system-audio worker was inside speech. Used by the mic
+/// worker to drop speaker echo when both sources are on without headphones.
+static SYSTEM_SPEECH_AT_MS: AtomicU64 = AtomicU64::new(0);
+static SYSTEM_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn db(x: f32) -> f32 {
+    20.0 * x.max(1e-6).log10()
+}
 
 pub fn spawn_streaming_worker(
     app: AppHandle,
@@ -39,426 +61,406 @@ pub fn spawn_streaming_worker(
         }
     }
 
-    let profile = match source {
-        AudioSource::Microphone => VadProfile::Microphone,
-        AudioSource::SystemLoopback => VadProfile::SystemLoopback,
+    let from_system = source == AudioSource::SystemLoopback;
+    let profile = if from_system {
+        VadProfile::SystemLoopback
+    } else {
+        VadProfile::Microphone
     };
-    let vad = VADEngine::new();
-    vad.reset(profile);
+    let source_key = if from_system { "system" } else { "mic" };
+    let dispatcher = Dispatcher {
+        app: app.clone(),
+        state_manager,
+        inflight: Arc::new(AtomicUsize::new(0)),
+        pending: Arc::new(Mutex::new(None)),
+        active_cancel: Arc::new(Mutex::new(None)),
+        answered: Arc::new(AtomicBool::new(false)),
+        from_system,
+        source_label: if from_system { "system" } else { "voice" },
+    };
 
     tokio::spawn(async move {
         let raw_buffer: Arc<SpscAudioRing> = match source {
             AudioSource::Microphone => Arc::clone(&capture_engine.mic_buffer),
             AudioSource::SystemLoopback => Arc::clone(&capture_engine.system_buffer),
         };
-        let source_label = match source {
-            AudioSource::Microphone => "Voice",
-            AudioSource::SystemLoopback => "System",
-        };
-        let source_key = if source == AudioSource::Microphone {
-            "mic"
-        } else {
-            "system"
-        };
-        let from_system = source == AudioSource::SystemLoopback;
+        let device_error = Arc::clone(capture_engine.device_error(source));
+        if from_system {
+            SYSTEM_ACTIVE.store(true, Ordering::Relaxed);
+        }
+        gemini_voice::prewarm(&app);
 
-        let mut rnnoise = if from_system {
-            None
-        } else {
-            Some(RnnoiseProcessor::new())
-        };
-        let mut agc = if from_system {
-            StreamingAgc::for_meeting()
-        } else {
-            StreamingAgc::new()
-        };
-        let mut optimizer = ChunkOptimizer::new();
-
+        let mut segmenter = Segmenter::new(profile);
+        let mut health = HealthTracker::new(from_system);
         let mut scratch = Vec::with_capacity(4096);
-        let mut clean_buf: Vec<f32> = Vec::with_capacity(CLEAN_CAP_SAMPLES);
-        let mut vad_cursor = 0usize;
-        let mut speech_start: Option<usize> = None;
-        let mut recent_speech = Vec::new();
-        let mut last_state = vad.get_state();
-        let mut remnant = Vec::new();
-
-        let inflight = Arc::new(AtomicUsize::new(0));
-        let max_inflight = 1usize;
-        let pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
-        let active_cancel: Arc<Mutex<Option<CancellationToken>>> = Arc::new(Mutex::new(None));
-        let mut interval = tokio::time::interval(Duration::from_millis(20));
+        let mut events = Vec::new();
+        let mut last_audio = Instant::now();
+        let mut last_fed = Instant::now();
+        let mut last_health = Instant::now();
+        let mut last_prewarm = Instant::now();
+        // Echo accounting for the current mic segment.
+        let mut seg_ticks = 0u32;
+        let mut seg_echo_ticks = 0u32;
+        let mut interval = tokio::time::interval(TICK);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
-                _ = &mut stop_rx => {
-                    if let Some(samples) = optimizer.flush_pending() {
-                        enqueue_or_run(
-                            &app,
-                            &state_manager,
-                            &inflight,
-                            &pending_queue,
-                            &active_cancel,
-                            samples,
-                            from_system,
-                            source_label,
-                            max_inflight,
-                        );
-                    }
-                    break;
+                _ = &mut stop_rx => break,
+                _ = interval.tick() => {}
+            }
+            dispatcher.drain();
+            // Once a request has been answered, the next utterance is a new question,
+            // never a continuation of the old one.
+            if dispatcher.answered.swap(false, Ordering::Relaxed) {
+                segmenter.forget_previous();
+            }
+            let now = Instant::now();
+
+            raw_buffer.pop_into(&mut scratch);
+            if scratch.is_empty() {
+                let gap = now.duration_since(last_fed);
+                if gap >= STARVED_AFTER {
+                    let n = (gap.as_millis() as usize).min(500) * SAMPLE_RATE / 1000;
+                    segmenter.push_silence(n, &mut events);
+                    last_fed = now;
                 }
-                _ = interval.tick() => {
-                    drain_pending(
-                        &app,
-                        &state_manager,
-                        &inflight,
-                        &pending_queue,
-                        &active_cancel,
-                        from_system,
-                        source_label,
-                        max_inflight,
-                    );
+            } else {
+                segmenter.push(&scratch, &mut events);
+                last_audio = now;
+                last_fed = now;
+                let level = segmenter.stats().level;
+                let _ = app.emit(
+                    "audio-waveform-data",
+                    serde_json::json!({ "volume": level, "pitch": 0.0, "source": source_key }),
+                );
+            }
+            let starved = now.duration_since(last_audio) >= NO_SIGNAL_AFTER;
+            health.observe(segmenter.stats(), scratch.is_empty());
 
-                    raw_buffer.pop_into(&mut scratch);
-                    if scratch.is_empty() {
-                        optimizer.discard_expired_short();
-                        if let Some(samples) = optimizer.flush_if_ready() {
-                            enqueue_or_run(
-                                &app,
-                                &state_manager,
-                                &inflight,
-                                &pending_queue,
-                                &active_cancel,
-                                samples,
-                                from_system,
-                                source_label,
-                                max_inflight,
-                            );
-                        }
-                        continue;
-                    }
-
-                    let mut processed = if let Some(ref mut rn) = rnnoise {
-                        rn.process_16k(&scratch)
-                    } else {
-                        scratch.clone()
-                    };
-                    agc.process(&mut processed);
-                    clean_buf.extend_from_slice(&processed);
-                    if clean_buf.len() > CLEAN_CAP_SAMPLES {
-                        let excess = clean_buf.len() - CLEAN_CAP_SAMPLES;
-                        clean_buf.drain(0..excess);
-                        vad_cursor = vad_cursor.saturating_sub(excess);
-                        if let Some(s) = speech_start.as_mut() {
-                            *s = s.saturating_sub(excess);
-                        }
-                    }
-
-                    remnant.extend_from_slice(&clean_buf[vad_cursor.min(clean_buf.len())..]);
-                    vad_cursor = clean_buf.len();
-                    let frame_size = 480;
-                    let mut boundary = false;
-                    let mut boundary_end = speech_start.unwrap_or(0);
-
-                    while remnant.len() >= frame_size {
-                        let chunk: Vec<f32> = remnant.drain(..frame_size).collect();
-                        let abs_pos = clean_buf.len().saturating_sub(remnant.len() + frame_size);
-
-                        let (current_state, triggered) = vad.process_frame(&chunk, &recent_speech);
-
-                        if matches!(current_state, VadState::Speech | VadState::Holding) {
-                            if speech_start.is_none() {
-                                speech_start = Some(abs_pos);
-                            }
-                            recent_speech.extend_from_slice(&chunk);
-                            if recent_speech.len() > 4800 {
-                                let excess = recent_speech.len() - 4800;
-                                recent_speech.drain(0..excess);
-                            }
-                        }
-
-                        if current_state != last_state {
-                            let state_str = match current_state {
-                                VadState::Silent => "idle",
-                                VadState::Speech => "listening",
-                                VadState::Holding => "holding",
-                                VadState::Trailing => "idle",
-                            };
-                            let _ = app.emit(
-                                "audio-state-changed",
-                                serde_json::json!({
-                                    "state": state_str,
-                                    "source": source_key,
-                                }),
-                            );
-                            last_state = current_state;
-                        }
-
-                        if triggered {
-                            boundary = true;
-                            boundary_end = clean_buf.len().saturating_sub(remnant.len());
-                            break;
-                        }
-                    }
-
-                    let mut sum_sq = 0.0f32;
-                    for &x in &processed {
-                        sum_sq += x * x;
-                    }
-                    let rms = (sum_sq / processed.len().max(1) as f32).sqrt();
-                    let _ = app.emit(
-                        "audio-waveform-data",
-                        serde_json::json!({
-                            "volume": rms,
-                            "pitch": 0.0,
-                            "source": source_key,
-                        }),
-                    );
-
-                    if boundary {
-                        let start = speech_start
-                            .unwrap_or(0)
-                            .saturating_sub(SPEECH_LEAD_PAD)
-                            .min(boundary_end);
-                        let end = boundary_end.min(clean_buf.len());
-                        let utterance = if start < end {
-                            clean_buf[start..end].to_vec()
-                        } else {
-                            Vec::new()
-                        };
-
-                        if end > 0 && end <= clean_buf.len() {
-                            clean_buf.drain(0..end);
-                        }
-                        vad_cursor = 0;
-                        remnant.clear();
-                        speech_start = None;
-                        recent_speech.clear();
-
-                        if !utterance.is_empty() && utterance.len() >= HARD_MIN_SAMPLES {
-                            if let Some(packed) = optimizer.push_utterance(&utterance) {
-                                enqueue_or_run(
-                                    &app,
-                                    &state_manager,
-                                    &inflight,
-                                    &pending_queue,
-                                    &active_cancel,
-                                    packed,
-                                    from_system,
-                                    source_label,
-                                    max_inflight,
-                                );
-                            }
-                        } else if !utterance.is_empty() {
-                            let _ = optimizer.push_utterance(&utterance);
-                        }
-                    } else {
-                        optimizer.discard_expired_short();
-                        if let Some(samples) = optimizer.flush_if_ready() {
-                            enqueue_or_run(
-                                &app,
-                                &state_manager,
-                                &inflight,
-                                &pending_queue,
-                                &active_cancel,
-                                samples,
-                                from_system,
-                                source_label,
-                                max_inflight,
-                            );
-                        }
+            if segmenter.in_speech() {
+                if from_system {
+                    SYSTEM_SPEECH_AT_MS.store(now_ms(), Ordering::Relaxed);
+                } else {
+                    seg_ticks += 1;
+                    let sys_at = SYSTEM_SPEECH_AT_MS.load(Ordering::Relaxed);
+                    if SYSTEM_ACTIVE.load(Ordering::Relaxed) && now_ms().saturating_sub(sys_at) < 300 {
+                        seg_echo_ticks += 1;
                     }
                 }
             }
+
+            for ev in events.drain(..) {
+                match ev {
+                    SegEvent::State(state) => {
+                        let state_str = match state {
+                            VadState::Speech => "listening",
+                            VadState::Holding => "holding",
+                            VadState::Silent | VadState::Trailing => "idle",
+                        };
+                        let _ = app.emit(
+                            "audio-state-changed",
+                            serde_json::json!({ "state": state_str, "source": source_key }),
+                        );
+                    }
+                    SegEvent::Rejected => {
+                        seg_ticks = 0;
+                        seg_echo_ticks = 0;
+                        let _ = app.emit(
+                            "audio-noise-ignored",
+                            serde_json::json!({ "source": source_key }),
+                        );
+                    }
+                    SegEvent::Utterance(utt) => {
+                        // Mic heard mostly what the speakers were playing: echo, not the user.
+                        let echo = !from_system && seg_ticks > 0 && seg_echo_ticks * 10 >= seg_ticks * 6;
+                        seg_ticks = 0;
+                        seg_echo_ticks = 0;
+                        if echo {
+                            segmenter.forget_previous();
+                            let _ = app.emit(
+                                "audio-noise-ignored",
+                                serde_json::json!({ "source": source_key, "reason": "echo" }),
+                            );
+                            continue;
+                        }
+                        dispatcher.send(utt);
+                    }
+                }
+            }
+
+            if now.duration_since(last_health) >= HEALTH_EVERY {
+                last_health = now;
+                let err = device_error.lock().ok().and_then(|e| e.clone());
+                let report = health.report(segmenter.stats(), starved, err);
+                let _ = app.emit(
+                    "audio-health",
+                    serde_json::json!({
+                        "source": source_key,
+                        "signal": report.signal,
+                        "detail": report.detail,
+                        "levelDb": report.level_db,
+                        "noiseDb": report.noise_db,
+                        "snrDb": report.snr_db,
+                    }),
+                );
+            }
+
+            if now.duration_since(last_prewarm) >= PREWARM_EVERY
+                && dispatcher.inflight.load(Ordering::Relaxed) == 0
+            {
+                last_prewarm = now;
+                gemini_voice::prewarm(&app);
+            }
         }
+
+        // Send speech that was still open when capture stopped.
+        segmenter.push_silence(SAMPLE_RATE, &mut events);
+        for ev in events.drain(..) {
+            if let SegEvent::Utterance(utt) = ev {
+                dispatcher.send(utt);
+            }
+        }
+        if from_system {
+            SYSTEM_ACTIVE.store(false, Ordering::Relaxed);
+        }
+        let _ = app.emit(
+            "audio-health",
+            serde_json::json!({ "source": source_key, "signal": "off" }),
+        );
     });
 }
 
-fn enqueue_or_run(
-    app: &AppHandle,
-    state_manager: &Arc<ConversationStateManager>,
-    inflight: &Arc<AtomicUsize>,
-    pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
-    active_cancel: &Arc<Mutex<Option<CancellationToken>>>,
-    samples: Vec<f32>,
-    from_system: bool,
-    source_label: &str,
-    max_inflight: usize,
-) {
-    let mut utt_buf = crate::modules::audio::ring_buffer::AudioUtteranceBuffer::new(16000);
-    utt_buf.push_samples(&samples);
-    if !utt_buf.is_valid_complete_utterance() {
-        return;
-    }
-
-    // Barge-in: cancel in-flight Gemini so the new utterance is answered immediately.
-    if inflight.load(Ordering::Relaxed) >= max_inflight {
-        if let Some(token) = active_cancel.lock().unwrap().take() {
-            token.cancel();
-        }
-        let mut q = pending_queue.lock().unwrap();
-        q.clear();
-        q.push_back(samples);
-        return;
-    }
-
-    spawn_voice_job(
-        app.clone(),
-        Arc::clone(state_manager),
-        Arc::clone(inflight),
-        Arc::clone(pending_queue),
-        Arc::clone(active_cancel),
-        samples,
-        from_system,
-        source_label,
-        max_inflight,
-    );
+struct HealthReport {
+    signal: &'static str,
+    detail: Option<String>,
+    level_db: f32,
+    noise_db: f32,
+    snr_db: Option<f32>,
 }
 
-fn drain_pending(
-    app: &AppHandle,
-    state_manager: &Arc<ConversationStateManager>,
-    inflight: &Arc<AtomicUsize>,
-    pending_queue: &Arc<Mutex<VecDeque<Vec<f32>>>>,
-    active_cancel: &Arc<Mutex<Option<CancellationToken>>>,
+/// Classifies what the user should know about the input right now.
+struct HealthTracker {
     from_system: bool,
-    source_label: &str,
-    max_inflight: usize,
-) {
-    if inflight.load(Ordering::Relaxed) >= max_inflight {
-        return;
-    }
-    let next = {
-        let mut q = pending_queue.lock().unwrap();
-        q.pop_front()
-    };
-    if let Some(samples) = next {
-        spawn_voice_job(
-            app.clone(),
-            Arc::clone(state_manager),
-            Arc::clone(inflight),
-            Arc::clone(pending_queue),
-            Arc::clone(active_cancel),
-            samples,
+    raw: VecDeque<(f32, f32)>, // (rms, peak) per tick with audio
+}
+
+impl HealthTracker {
+    fn new(from_system: bool) -> Self {
+        Self {
             from_system,
-            source_label,
-            max_inflight,
-        );
+            raw: VecDeque::with_capacity(HEALTH_WINDOW + 1),
+        }
+    }
+
+    fn observe(&mut self, stats: SignalStats, empty: bool) {
+        if empty {
+            return;
+        }
+        self.raw.push_back((stats.raw_rms, stats.raw_peak));
+        if self.raw.len() > HEALTH_WINDOW {
+            self.raw.pop_front();
+        }
+    }
+
+    fn report(&self, stats: SignalStats, starved: bool, device_error: Option<String>) -> HealthReport {
+        let level_db = db(stats.level);
+        let noise_db = db(stats.noise_floor);
+        let snr_db = (stats.speech_level > 0.0).then(|| db(stats.speech_level) - noise_db);
+        let mk = |signal: &'static str, detail: Option<&str>| HealthReport {
+            signal,
+            detail: detail.map(str::to_string),
+            level_db,
+            noise_db,
+            snr_db,
+        };
+
+        if let Some(e) = device_error {
+            return HealthReport {
+                detail: Some(format!("Audio device error: {e}")),
+                ..mk("device-error", None)
+            };
+        }
+        if starved {
+            return if self.from_system {
+                mk("idle", Some("Nothing is playing on this PC"))
+            } else {
+                mk(
+                    "no-signal",
+                    Some("Mic sends no audio — check it is not muted or blocked in Windows privacy settings"),
+                )
+            };
+        }
+        if self.raw.len() < 25 {
+            return mk("ok", None);
+        }
+        let loudest = self.raw.iter().map(|r| r.0).fold(0.0f32, f32::max);
+        let quietest = self.raw.iter().map(|r| r.0).fold(f32::MAX, f32::min);
+        let recent_clip = self.raw.iter().rev().take(50).any(|r| r.1 >= 0.99);
+
+        if !self.from_system && loudest < 0.00005 {
+            return mk("muted", Some("Mic is muted (digital silence) — unmute it in Windows or on the headset"));
+        }
+        if recent_clip {
+            return mk("clipping", Some("Input is distorting — lower the volume or move the mic away"));
+        }
+        // Minimum statistics: even the quietest moments are loud → noisy room / music.
+        if quietest > 0.03 {
+            return mk("noisy", Some("Loud background noise — accuracy may drop; move closer to the mic"));
+        }
+        if !self.from_system && loudest < 0.004 {
+            return mk("quiet", Some("Very low mic level — raise input volume or speak closer"));
+        }
+        mk("ok", None)
     }
 }
 
-fn spawn_voice_job(
+/// Owns the in-flight request for one source. New speech cancels the old request
+/// (barge-in) and only the newest utterance waits.
+#[derive(Clone)]
+struct Dispatcher {
     app: AppHandle,
     state_manager: Arc<ConversationStateManager>,
     inflight: Arc<AtomicUsize>,
-    pending_queue: Arc<Mutex<VecDeque<Vec<f32>>>>,
+    pending: Arc<Mutex<Option<Utterance>>>,
     active_cancel: Arc<Mutex<Option<CancellationToken>>>,
-    samples: Vec<f32>,
+    /// Set when a request finished on its own (not superseded by barge-in).
+    answered: Arc<AtomicBool>,
     from_system: bool,
-    source_label: &str,
-    max_inflight: usize,
-) {
-    let prev = inflight.fetch_add(1, Ordering::Relaxed);
-    if prev >= max_inflight {
-        inflight.fetch_sub(1, Ordering::Relaxed);
-        if let Some(token) = active_cancel.lock().unwrap().take() {
-            token.cancel();
+    source_label: &'static str,
+}
+
+impl Dispatcher {
+    fn send(&self, utt: Utterance) {
+        let _ = self.app.emit(
+            "voice-utterance",
+            serde_json::json!({
+                "source": self.source_label,
+                "durationMs": utt.samples.len() * 1000 / SAMPLE_RATE,
+                "merged": utt.merged,
+            }),
+        );
+        if self.inflight.load(Ordering::Relaxed) > 0 {
+            if let Some(token) = self.active_cancel.lock().unwrap().take() {
+                token.cancel();
+            }
+            *self.pending.lock().unwrap() = Some(utt);
+            return;
         }
-        let mut q = pending_queue.lock().unwrap();
-        q.clear();
-        q.push_back(samples);
-        return;
+        self.spawn_job(utt);
     }
 
-    let cancel = CancellationToken::new();
-    *active_cancel.lock().unwrap() = Some(cancel.clone());
-    let source_label = source_label.to_string();
+    fn drain(&self) {
+        if self.inflight.load(Ordering::Relaxed) > 0 {
+            return;
+        }
+        let next = self.pending.lock().unwrap().take();
+        if let Some(utt) = next {
+            self.spawn_job(utt);
+        }
+    }
 
-    tokio::spawn(async move {
-        let started = Instant::now();
-        let result = tokio::time::timeout(
-            JOB_WATCHDOG,
-            gemini_voice::answer_from_audio(app.clone(), &samples, 16000, from_system, cancel.clone()),
-        )
-        .await;
+    fn spawn_job(&self, utt: Utterance) {
+        if self.inflight.fetch_add(1, Ordering::Relaxed) > 0 {
+            self.inflight.fetch_sub(1, Ordering::Relaxed);
+            *self.pending.lock().unwrap() = Some(utt);
+            return;
+        }
 
-        match result {
-            Ok(Ok(Some(answer))) => {
-                if state_manager.is_ai_generating() {
-                    state_manager.set_interrupted(true);
-                    let _ = app.emit("ai-interrupted", ());
+        // Registered before spawning so F3 can cancel it by id from the first moment.
+        let (op_id, cancel) = self.app.state::<OpRegistry>().begin(OpKind::Voice);
+        *self.active_cancel.lock().unwrap() = Some(cancel.clone());
+        let this = self.clone();
+
+        tokio::spawn(async move {
+            let app = this.app.clone();
+            let started = Instant::now();
+            let result = tokio::time::timeout(
+                JOB_WATCHDOG,
+                gemini_voice::answer_from_audio(
+                    app.clone(),
+                    &utt.samples,
+                    SAMPLE_RATE as u32,
+                    this.from_system,
+                    cancel.clone(),
+                    op_id,
+                ),
+            )
+            .await;
+
+            // F3 may land after the stream finished but before we emit: drop the answer.
+            let cancelled = cancel.is_cancelled() || app.state::<OpRegistry>().is_cancelled(op_id);
+            match result {
+                Ok(Ok(Some(_))) if cancelled => {}
+                Ok(Ok(Some(va))) => this.publish(op_id, utt.merged, va),
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    if e != "cancelled" && !cancelled {
+                        eprintln!("[API ERROR] {}", e);
+                        this.emit_error(op_id, &e);
+                    }
                 }
-                state_manager.set_ai_generating(true);
-
-                let (emit_answer, detected_question) = if from_system {
-                    gemini_voice::extract_system_question(&answer)
-                } else {
-                    (answer.clone(), None)
-                };
-
-                gemini_voice::remember_turn(detected_question.as_deref(), &emit_answer);
-
-                if let Some(question) = detected_question {
-                    let _ = app.emit(
-                        "voice-system-question",
-                        serde_json::json!({ "question": question }),
+                Err(_) => {
+                    let msg = format!(
+                        "Voice request timed out after {}s — check your connection",
+                        started.elapsed().as_secs()
                     );
+                    eprintln!("[API ERROR] {}", msg);
+                    this.emit_error(op_id, &msg);
                 }
-
-                let _ = app.emit(
-                    "voice-gemini-answer",
-                    serde_json::json!({
-                        "answer": emit_answer,
-                        "source": source_label.to_lowercase(),
-                    }),
-                );
-                state_manager.set_ai_generating(false);
             }
 
-            Ok(Ok(None)) => {}
-
-            Ok(Err(e)) => {
-                if e != "cancelled" {
-                    eprintln!("[API ERROR] {}", e);
-                    let _ = app.emit(
-                        "voice-gemini-error",
-                        serde_json::json!({
-                            "message": e,
-                            "source": source_label.to_lowercase(),
-                        }),
-                    );
-                }
+            app.state::<OpRegistry>().end(op_id);
+            this.inflight.fetch_sub(1, Ordering::Relaxed);
+            if !cancel.is_cancelled() {
+                this.answered.store(true, Ordering::Relaxed);
+                *this.active_cancel.lock().unwrap() = None;
             }
-            Err(_) => {
-                let msg = format!(
-                    "Voice request timed out after {}s",
-                    started.elapsed().as_secs()
-                );
-                eprintln!("[API ERROR] {}", msg);
-                let _ = app.emit(
-                    "voice-gemini-error",
-                    serde_json::json!({
-                        "message": msg,
-                        "source": source_label.to_lowercase(),
-                    }),
-                );
+            this.drain();
+        });
+    }
+
+    fn publish(&self, op_id: u64, merged: bool, va: gemini_voice::VoiceAnswer) {
+        let app = &self.app;
+        if self.state_manager.is_ai_generating() {
+            self.state_manager.set_interrupted(true);
+            let _ = app.emit("ai-interrupted", ());
+        }
+        self.state_manager.set_ai_generating(true);
+
+        gemini_voice::remember_turn(va.question.as_deref(), &va.answer);
+
+        if let Some(question) = va.question.as_deref() {
+            if self.from_system {
+                let _ = app.emit("voice-system-question", serde_json::json!({ "question": question }));
+                crate::modules::cloud_sync::enqueue_voice_event(app, "interviewer", question, "desktop_system");
             }
         }
 
-        let _ = inflight.fetch_sub(1, Ordering::Relaxed);
-        if !cancel.is_cancelled() {
-            *active_cancel.lock().unwrap() = None;
-        }
-
-        drain_pending(
-            &app,
-            &state_manager,
-            &inflight,
-            &pending_queue,
-            &active_cancel,
-            from_system,
-            &source_label,
-            max_inflight,
+        let _ = app.emit(
+            "voice-gemini-answer",
+            serde_json::json!({
+                "answer": va.answer,
+                "question": va.question,
+                "opId": op_id,
+                "source": self.source_label,
+                "merged": merged,
+                "firstTokenMs": va.first_token_ms,
+                "totalMs": va.total_ms,
+            }),
         );
-    });
+        crate::modules::cloud_sync::enqueue_voice_event(app, "copilot", &va.answer, "desktop_gemini");
+        self.state_manager.set_ai_generating(false);
+    }
+
+    fn emit_error(&self, op_id: u64, message: &str) {
+        let _ = self.app.emit(
+            "voice-gemini-error",
+            serde_json::json!({
+                "message": message,
+                "opId": op_id,
+                "source": self.source_label,
+            }),
+        );
+    }
 }

@@ -13,5 +13,8 @@ pub mod rnnoise_processor;
 pub mod perf_metrics;
 pub mod chunk_optimizer;
 pub mod ring_buffer;
+pub mod segmenter;
+#[cfg(test)]
+mod listening_tests;
 pub mod streaming_pipeline;
 pub mod commands;

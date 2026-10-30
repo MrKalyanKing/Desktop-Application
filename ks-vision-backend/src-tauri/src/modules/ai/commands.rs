@@ -71,8 +71,14 @@ pub async fn stream_ai(
     channel: tauri::ipc::Channel<String>,
     base_url: Option<String>,
     state: State<'_, AiState>,
+    ops: State<'_, crate::modules::shortcuts::ops::OpRegistry>,
 ) -> Result<(), AiError> {
-    let token = CancellationToken::new();
+    // Keyboard ops pass their registry id as request_id so F3 cancels the same token.
+    let token = request_id
+        .parse::<u64>()
+        .ok()
+        .and_then(|id| ops.token(id))
+        .unwrap_or_else(CancellationToken::new);
 
     {
         let mut active = state.active_generations.lock().unwrap();

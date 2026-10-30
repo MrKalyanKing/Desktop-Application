@@ -6,22 +6,32 @@ interface WidgetContainerProps extends React.HTMLAttributes<HTMLDivElement> {
   opacity: number;
 }
 
-export const WidgetContainer: React.FC<WidgetContainerProps> = ({ 
-  children, 
-  opacity, 
-  className, 
-  ...props 
+export const WidgetContainer: React.FC<WidgetContainerProps> = ({
+  children,
+  opacity,
+  className,
+  ...props
 }) => {
   return (
-    <div
-      className={cn(
-        "widget-glass relative w-full h-full rounded-2xl overflow-hidden flex flex-col select-none",
-        className
-      )}
-      style={{ opacity, transition: 'opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}
-      {...props}
-    >
-      {children}
+    <div className={cn('lg-panel', className)} {...props}>
+      {/* Transparency applies to the background only; text always stays fully opaque. */}
+      <div
+        className="lg-panel__material"
+        aria-hidden="true"
+        style={{ opacity, transition: 'opacity 0.35s cubic-bezier(0.22, 1, 0.36, 1)' }}
+      >
+        <div className="lg-panel__blur" />
+        <div className="lg-panel__tint" />
+        <div className="lg-panel__orbs">
+          <span className="lg-orb lg-orb--a" />
+          <span className="lg-orb lg-orb--b" />
+          <span className="lg-orb lg-orb--c" />
+        </div>
+        <div className="lg-panel__noise" />
+        <div className="lg-panel__sheen" />
+        <div className="lg-panel__rim" />
+      </div>
+      <div className="lg-panel__content">{children}</div>
     </div>
   );
 };

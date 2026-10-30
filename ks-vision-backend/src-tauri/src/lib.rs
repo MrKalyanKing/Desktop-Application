@@ -1,7 +1,6 @@
 pub mod modules;
 
 use tauri::{Manager, WindowEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,7 +19,13 @@ pub fn run() {
   }));
 
   tauri::Builder::default()
+    // Must be first: a second launch (Start Menu key while already running) just shows
+    // the existing overlay instead of starting a copy that can't register any keys.
+    .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+      let _ = modules::shortcuts::window::show_overlay(app, true);
+    }))
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    .plugin(tauri_plugin_clipboard_manager::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -45,18 +50,15 @@ pub fn run() {
         let _ = window.set_cursor_visible(false);
       }
 
-      // Ctrl+Shift+K toggles ghost mode (backend only — no UI wiring)
-      let ghost_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
-      app.global_shortcut().on_shortcut(ghost_shortcut, |app_handle, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-          let _ = modules::window::ghost::toggle_ghost_mode(app_handle);
-        }
-      })?;
+      // All global keys live in one Rust registry, registered once here; see modules::shortcuts.
+      modules::shortcuts::init(app.handle());
       
       Ok(())
     })
     .manage(modules::ai::commands::AiState::new())
     .manage(modules::audio::commands::AudioState::new())
+    .manage(modules::shortcuts::ShortcutState::new())
+    .manage(modules::shortcuts::ops::OpRegistry::new())
     .on_window_event(|window, event| {
       match event {
         WindowEvent::Moved(position) => {
@@ -70,9 +72,7 @@ pub fn run() {
           // X / close on main → ghost mode instead of quitting (quit via tray)
           if window.label() == "main" {
             api.prevent_close();
-            if let Some(win) = window.app_handle().get_webview_window("main") {
-              let _ = modules::window::ghost::enter_ghost_mode(&win);
-            }
+            let _ = modules::shortcuts::window::hide_overlay(window.app_handle());
           }
         }
         _ => {}
@@ -115,7 +115,20 @@ pub fn run() {
       modules::audio::commands::get_audio_capture_state,
       modules::audio::commands::register_ai_audio_output,
       modules::audio::commands::set_ai_generating_state,
-      modules::audio::commands::pop_next_pending_question
+      modules::audio::commands::pop_next_pending_question,
+      modules::cloud_sync::commands::cloud_configure,
+      modules::cloud_sync::commands::cloud_get_status,
+      modules::cloud_sync::commands::cloud_login,
+      modules::cloud_sync::commands::cloud_logout,
+      modules::cloud_sync::commands::cloud_set_session,
+      modules::cloud_sync::commands::cloud_flush_queue,
+      modules::shortcuts::get_shortcut_status_cmd,
+      modules::shortcuts::set_last_answer_cmd,
+      modules::shortcuts::show_overlay_cmd,
+      modules::shortcuts::hide_overlay_cmd,
+      modules::shortcuts::ops::begin_op_cmd,
+      modules::shortcuts::ops::end_op_cmd,
+      modules::shortcuts::window::release_focus_cmd
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

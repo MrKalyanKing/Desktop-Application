@@ -1,3 +1,4 @@
-export * from './hooks/useGlobalHotkeys';
-export * from './services/hotkey.service';
+export * from './hooks/useShortcutActions';
+export * from './hooks/useShortcutFeedback';
+export * from './services/ops.service';
 export * from './constants/hotkey.constants';

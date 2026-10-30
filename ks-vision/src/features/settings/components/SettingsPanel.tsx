@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
+import { AnimatePresence, LayoutGroup, motion } from 'motion/react';
 import {
   Settings24Regular,
   Bot24Regular,
   Mic24Regular,
   Square24Regular,
   Keyboard24Regular,
-  Dismiss24Regular,
-  Checkmark24Filled,
   Apps24Regular,
 } from '@fluentui/react-icons';
 import { useSettings } from '../hooks/useSettings';
@@ -24,12 +23,25 @@ interface SettingsPanelProps {
 type TabType = 'general' | 'ai' | 'voice' | 'widget' | 'hotkeys';
 
 const TABS: { id: TabType; label: string; icon: React.ReactNode }[] = [
-  { id: 'general', label: 'General', icon: <Apps24Regular style={{ fontSize: 14 }} /> },
-  { id: 'ai', label: 'AI', icon: <Bot24Regular style={{ fontSize: 14 }} /> },
-  { id: 'voice', label: 'Voice', icon: <Mic24Regular style={{ fontSize: 14 }} /> },
-  { id: 'widget', label: 'Widget', icon: <Square24Regular style={{ fontSize: 14 }} /> },
-  { id: 'hotkeys', label: 'Keys', icon: <Keyboard24Regular style={{ fontSize: 14 }} /> },
+  { id: 'general', label: 'General', icon: <Apps24Regular style={{ fontSize: 13 }} /> },
+  { id: 'ai', label: 'AI', icon: <Bot24Regular style={{ fontSize: 13 }} /> },
+  { id: 'voice', label: 'Voice', icon: <Mic24Regular style={{ fontSize: 13 }} /> },
+  { id: 'widget', label: 'Widget', icon: <Square24Regular style={{ fontSize: 13 }} /> },
+  { id: 'hotkeys', label: 'Keys', icon: <Keyboard24Regular style={{ fontSize: 13 }} /> },
 ];
+
+const FOOTER_STATUS: Record<TabType, string> = {
+  general: 'Preferences',
+  ai: 'Model ready',
+  voice: 'Voice ready',
+  widget: 'Overlay ready',
+  hotkeys: 'Shortcuts active',
+};
+
+const glassTransition = {
+  duration: 0.42,
+  ease: [0.22, 1, 0.36, 1] as const,
+};
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
   const { preferences, saveSettings, loading } = useSettings();
@@ -44,7 +56,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
 
   if (!editedPrefs) {
     return (
-      <div className="flex-1 flex items-center justify-center text-[13px] text-slate-400">
+      <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--lg-text-secondary)]">
         Loading settings…
       </div>
     );
@@ -71,53 +83,65 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
   };
 
   return (
-    <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden">
-      <div className="shrink-0 px-3 pt-2 pb-2 border-b border-white/10">
-        <div className="flex items-center gap-2 mb-2">
-          <Settings24Regular className="text-cyan-300" style={{ fontSize: 18 }} />
-          <span className="text-[15px] font-semibold text-slate-100">Settings</span>
+    <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+      <div className="shrink-0 px-4 pb-2">
+        <div className="mb-3 flex items-center gap-2">
+          <Settings24Regular className="text-[var(--lg-text)]" style={{ fontSize: 18 }} />
+          <span className="text-[18px] font-semibold tracking-[-0.03em] text-white">Settings</span>
         </div>
-        <div className="flex gap-1 overflow-x-auto">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1 px-2.5 py-2 rounded-lg text-[12px] font-semibold whitespace-nowrap ${
-                activeTab === tab.id
-                  ? 'bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-400/25'
-                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        <LayoutGroup>
+          <div className="lg-tabs">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={activeTab === tab.id ? 'is-active' : ''}
+              >
+                {activeTab === tab.id && (
+                  <motion.span
+                    layoutId="settings-tab-glass"
+                    className="lg-tab-glass"
+                    transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+                  />
+                )}
+                <span className="lg-tab-label">
+                  {tab.icon}
+                  {tab.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </LayoutGroup>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 w-full">
-        {renderTabContent()}
+      <div className="lg-settings-scroll">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, filter: 'blur(16px)', y: 14, scale: 0.97 }}
+            animate={{ opacity: 1, filter: 'blur(0px)', y: 0, scale: 1 }}
+            exit={{ opacity: 0, filter: 'blur(12px)', y: -10, scale: 0.98 }}
+            transition={glassTransition}
+          >
+            {renderTabContent()}
+          </motion.div>
+        </AnimatePresence>
       </div>
 
-      <div className="shrink-0 flex justify-end gap-2 px-3 py-2.5 border-t border-white/10 bg-[rgba(12,16,32,0.98)]">
-        <button
-          type="button"
-          onClick={onClose}
-          className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[12px] text-slate-300 font-semibold"
-        >
-          <Dismiss24Regular style={{ fontSize: 14 }} />
-          Cancel
-        </button>
-        <button
-          type="button"
-          disabled={loading}
-          onClick={handleSave}
-          className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-cyan-400/20 hover:bg-cyan-400/30 border border-cyan-400/30 text-[12px] text-cyan-100 font-semibold disabled:opacity-50"
-        >
-          <Checkmark24Filled style={{ fontSize: 14 }} />
-          {loading ? 'Saving…' : 'Save'}
-        </button>
+      <div className="lg-footer">
+        <div className="lg-status">
+          <span className="lg-status-dot" />
+          {FOOTER_STATUS[activeTab]}
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={onClose} className="lg-btn">
+            Cancel
+          </button>
+          <button type="button" disabled={loading} onClick={handleSave} className="lg-btn lg-btn--primary">
+            {loading ? 'Saving…' : 'Save'}
+          </button>
+        </div>
       </div>
     </div>
   );

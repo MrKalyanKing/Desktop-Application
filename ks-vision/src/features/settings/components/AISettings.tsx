@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { AppSettings } from '../types/settings.types';
 import { useAI } from '../../ai';
 import { useSettings } from '../hooks/useSettings';
+import { GlassCheckbox } from '../../../shared/components/glass';
 
 interface SubProps {
   preferences: AppSettings;
@@ -104,10 +105,10 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
 
   return (
     <div className="ks-settings-page">
-      <div className="ks-settings-card">
-        <h4 className="text-[12px] text-cyan-300 font-semibold uppercase tracking-wide">Parameters</h4>
-        
-        <div className="flex flex-col gap-0.5">
+      <div className="lg-stack">
+        <div className="lg-section"><span>Parameters</span></div>
+
+        <div className="lg-block">
           <label className="ks-settings-label">Active Model</label>
           <select
             value={preferences.ai.activeModel}
@@ -126,56 +127,50 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
           </select>
         </div>
 
-        <div className="grid grid-cols-2 gap-1.5">
-          <div className="flex flex-col gap-0.5">
-            <label className="ks-settings-label">Temp ({preferences.ai.temperature})</label>
-            <input
-              type="range"
-              min="0"
-              max="1.5"
-              step="0.1"
-              value={preferences.ai.temperature}
-              onChange={(e) => updateAI('temperature', parseFloat(e.target.value))}
-              className="accent-cyan-500 cursor-pointer h-1.5"
-            />
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <label className="ks-settings-label">Max Tokens</label>
-            <input
-              type="number"
-              value={preferences.ai.maxTokens}
-              onChange={(e) => updateAI('maxTokens', parseInt(e.target.value) || 128)}
-              className="ks-settings-input"
-            />
-          </div>
+        <div className="lg-block">
+          <label className="ks-settings-label">Temp ({preferences.ai.temperature})</label>
+          <input
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.1"
+            value={preferences.ai.temperature}
+            onChange={(e) => updateAI('temperature', parseFloat(e.target.value))}
+            className="lg-slider"
+          />
         </div>
 
-        <label className="ks-settings-row cursor-pointer">
-          <span>Streaming Mode</span>
-          <input 
-            type="checkbox"
-            checked={preferences.ai.streaming}
-            onChange={(e) => updateAI('streaming', e.target.checked)}
-            className="accent-cyan-500 h-3.5 w-3.5"
+        <div className="lg-row">
+          <span className="lg-row-label">Max Tokens</span>
+          <input
+            type="number"
+            value={preferences.ai.maxTokens}
+            onChange={(e) => updateAI('maxTokens', parseInt(e.target.value) || 128)}
+            className="ks-settings-input"
           />
-        </label>
+        </div>
 
-        <label className="ks-settings-row cursor-pointer">
-          <span>Auto Copy Response</span>
-          <input 
-            type="checkbox"
-            checked={preferences.ai.autoCopyResponse}
-            onChange={(e) => updateAI('autoCopyResponse', e.target.checked)}
-            className="accent-cyan-500 h-3.5 w-3.5"
+        <div className="lg-row">
+          <span className="lg-row-label">Streaming Mode</span>
+          <GlassCheckbox
+            checked={preferences.ai.streaming}
+            onChange={(checked) => updateAI('streaming', checked)}
           />
-        </label>
+        </div>
+
+        <div className="lg-row">
+          <span className="lg-row-label">Auto Copy Response</span>
+          <GlassCheckbox
+            checked={preferences.ai.autoCopyResponse}
+            onChange={(checked) => updateAI('autoCopyResponse', checked)}
+          />
+        </div>
       </div>
 
-      {/* AI Provider Card */}
-      <div className="ks-settings-card">
-        <h4 className="text-[12px] text-cyan-300 font-semibold uppercase tracking-wide">AI Provider</h4>
-        
-        <div className="flex flex-col gap-0.5">
+      <div className="lg-stack mt-2">
+        <div className="lg-section"><span>AI Provider</span></div>
+
+        <div className="lg-block">
           <label className="ks-settings-label">Provider</label>
           <select
             value={preferences.aiProvider?.provider || 'Gemini'}
@@ -188,11 +183,10 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
         </div>
 
         {isEditing ? (
-          /* Editable Input Form */
           <>
-            <div className="flex flex-col gap-0.5">
+            <div className="lg-block">
               <label className="ks-settings-label">Gemini API Key</label>
-              <div className="relative flex items-center w-full">
+              <div className="relative flex w-full items-center">
                 <input
                   type={showApiKey ? 'text' : 'password'}
                   value={preferences.aiProvider?.apiKey || ''}
@@ -203,25 +197,24 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
                 <button
                   type="button"
                   onClick={() => setShowApiKey(!showApiKey)}
-                  className="absolute right-1.5 text-slate-400 hover:text-slate-200 px-1 text-[8px] font-bold uppercase"
+                  className="absolute right-1.5 px-1 text-[8px] font-bold uppercase text-[var(--lg-text-muted)] hover:text-[var(--lg-text)]"
                 >
                   {showApiKey ? 'Hide' : 'Show'}
                 </button>
               </div>
+              {!hasExistingKey && (
+                <div className="text-[11px] font-medium text-amber-300">
+                  No Gemini API key configured.
+                </div>
+              )}
             </div>
 
-            {!hasExistingKey && (
-              <div className="text-[9px] text-amber-500 font-bold mt-0.5">
-                No Gemini API key configured.
-              </div>
-            )}
-
-            <div className="flex gap-1.5 mt-1">
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={handleTestConnection}
                 disabled={testing || !(preferences.aiProvider?.apiKey?.trim())}
-                className="px-2 py-0.5 bg-slate-950/50 hover:bg-slate-900 border border-slate-800/60 rounded text-[9px] text-slate-300 font-bold active:scale-95 transition-all disabled:opacity-50"
+                className="lg-btn h-8 px-3 text-[11px] disabled:opacity-50"
               >
                 {testing ? 'Testing...' : 'Test Connection'}
               </button>
@@ -229,7 +222,7 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
                 type="button"
                 onClick={handleSaveApiKey}
                 disabled={saving || !(preferences.aiProvider?.apiKey?.trim())}
-                className="px-2.5 py-0.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800/50 rounded text-[9px] text-cyan-300 font-bold active:scale-95 transition-all disabled:opacity-50"
+                className="lg-btn lg-btn--primary h-8 px-3 text-[11px] disabled:opacity-50"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>
@@ -240,7 +233,7 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
                     setIsEditing(false);
                     setStatusMessage('');
                   }}
-                  className="px-2 py-0.5 bg-slate-950/50 hover:bg-slate-900 border border-slate-800/60 rounded text-[9px] text-slate-400 font-bold active:scale-95 transition-all"
+                  className="lg-btn h-8 px-3 text-[11px]"
                 >
                   Cancel
                 </button>
@@ -248,26 +241,26 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
             </div>
           </>
         ) : (
-          /* Secure Configured Display View */
           <>
-            <div className="flex flex-col gap-1 border border-green-800/30 rounded p-1.5 bg-green-950/10">
-              <div className="text-[9px] text-green-400 font-bold flex items-center gap-1">
-                <span>✓</span> Gemini API Key Configured
+            <div className="lg-block">
+              <div className="lg-status px-0">
+                <span className="lg-status-dot" />
+                API Key Configured
               </div>
-              <div className="text-[8px] text-slate-400 leading-normal">
+              <div className="text-[11px] leading-normal text-[var(--lg-text-secondary)]">
                 A Gemini API key has already been securely saved for this application.
               </div>
-              <div className="text-[9px] text-slate-500 font-mono tracking-wider mt-0.5">
+              <div className="font-mono text-[10px] tracking-wider text-[var(--lg-text-muted)]">
                 ••••••••••••••••••••••••••••••••
               </div>
             </div>
 
-            <div className="flex gap-1.5 mt-1">
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={handleTestConnection}
                 disabled={testing}
-                className="px-2 py-0.5 bg-slate-950/50 hover:bg-slate-900 border border-slate-800/60 rounded text-[9px] text-slate-300 font-bold active:scale-95 transition-all"
+                className="lg-btn h-8 px-3 text-[11px]"
               >
                 {testing ? 'Testing...' : 'Test Connection'}
               </button>
@@ -277,17 +270,19 @@ export const AISettingsView: React.FC<SubProps> = ({ preferences, onChange }) =>
                   setIsEditing(true);
                   setStatusMessage('');
                 }}
-                className="px-2.5 py-0.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800/50 rounded text-[9px] text-cyan-300 font-bold active:scale-95 transition-all"
+                className="lg-btn lg-btn--primary h-8 px-3 text-[11px]"
               >
                 Update API Key
               </button>
             </div>
           </>
         )}
-        
+
         {statusMessage && (
-          <div className={`text-[9px] mt-0.5 font-bold ${
-            statusMessage.includes('successful') || statusMessage.includes('Configured') ? 'text-green-400' : 'text-rose-400'
+          <div className={`text-[11px] font-semibold ${
+            statusMessage.includes('successful') || statusMessage.includes('Configured')
+              ? 'text-[var(--lg-success)]'
+              : 'text-[var(--lg-danger)]'
           }`}>
             {statusMessage}
           </div>

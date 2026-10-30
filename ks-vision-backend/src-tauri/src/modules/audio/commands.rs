@@ -94,6 +94,12 @@ pub async fn start_audio_capture(
     mode: String,
 ) -> Result<(), String> {
     let mode = mode.to_lowercase();
+    // A new listening session starts without the previous session's topics.
+    if !state.capture_engine.is_recording(AudioSource::Microphone)
+        && !state.capture_engine.is_recording(AudioSource::SystemLoopback)
+    {
+        crate::modules::transcription::gemini_voice::clear_turns();
+    }
     match mode.as_str() {
         "both" | "all" | "continuous" => {
             let mic_res = start_one_source(&app, &state, AudioSource::Microphone);
@@ -154,6 +160,7 @@ pub fn get_audio_capture_state(state: State<'_, AudioState>) -> CaptureStateResp
         (false, true) => "system",
         _ => "mic",
     };
+    println!("[AUDIO] state mic={} system={}", mic_active, system_active);
     CaptureStateResponse {
         is_recording: mic_active || system_active,
         mode: mode.to_string(),

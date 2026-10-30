@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { AppSettings } from '../types/settings.types';
+import { GlassHotkeyField } from '../../../shared/components/glass';
 
 interface SubProps {
   preferences: AppSettings;
@@ -41,19 +42,15 @@ export const HotkeySettingsView: React.FC<SubProps> = ({ preferences, onChange }
   return (
     <div className="ks-settings-page">
       {duplicateError && (
-        <div className="text-rose-300 font-semibold bg-rose-950/30 border border-rose-800/40 p-2.5 rounded-xl text-[12px]">
-          {duplicateError}
-        </div>
+        <div className="lg-row text-[12px] text-[var(--lg-danger)]">{duplicateError}</div>
       )}
-      <div className="ks-settings-card">
+      <div className="lg-stack">
         {fields.map((f) => (
-          <div key={f.key} className="flex flex-col gap-1 w-full">
-            <label className="ks-settings-label">{f.label}</label>
-            <input
-              type="text"
+          <div key={f.key} className="lg-row">
+            <span className="lg-row-label">{f.label}</span>
+            <GlassHotkeyField
               value={preferences.hotkeys[f.key]}
-              onChange={(e) => updateHotkey(f.key, e.target.value)}
-              className="ks-settings-input font-mono"
+              onChange={(value) => updateHotkey(f.key, value)}
             />
           </div>
         ))}

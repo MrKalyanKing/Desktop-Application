@@ -23,6 +23,10 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   source?: string;
+  /** Voice answers: the question the model heard. */
+  question?: string;
+  /** Voice answers: speech end to first answer token. */
+  latencyMs?: number;
 }
 
 export interface PromptContext {

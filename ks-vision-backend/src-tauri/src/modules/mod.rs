@@ -10,3 +10,5 @@ pub mod tray;
 pub mod audio;
 pub mod transcription;
 pub mod cognition;
+pub mod cloud_sync;
+pub mod shortcuts;

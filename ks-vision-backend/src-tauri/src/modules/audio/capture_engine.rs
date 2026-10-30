@@ -3,7 +3,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::modules::audio::lock_free_ring::SpscAudioRing;
 use crate::modules::audio::echo_reference::EchoReferenceBuffer;
-use crate::modules::audio::resampler::LinearResampler;
+use crate::modules::audio::resampler::StreamResampler;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioSource {
@@ -37,6 +37,9 @@ pub struct CaptureEngine {
     pub ai_output_monitor: Arc<EchoReferenceBuffer>,
     pub mic_stop_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub system_stop_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Last CPAL stream error per source (device unplugged, exclusive mode, ...).
+    pub mic_error: Arc<Mutex<Option<String>>>,
+    pub system_error: Arc<Mutex<Option<String>>>,
 }
 
 impl CaptureEngine {
@@ -50,6 +53,15 @@ impl CaptureEngine {
             ai_output_monitor: Arc::new(EchoReferenceBuffer::new()),
             mic_stop_tx: Mutex::new(None),
             system_stop_tx: Mutex::new(None),
+            mic_error: Arc::new(Mutex::new(None)),
+            system_error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn device_error(&self, source: AudioSource) -> &Arc<Mutex<Option<String>>> {
+        match source {
+            AudioSource::Microphone => &self.mic_error,
+            AudioSource::SystemLoopback => &self.system_error,
         }
     }
 
@@ -108,8 +120,15 @@ impl CaptureEngine {
         };
         buffer.clear();
 
-        let resampler = LinearResampler::new();
-        let err_fn = |err| eprintln!("An error occurred on cpal stream: {}", err);
+        let mut resampler = StreamResampler::new(sample_rate, 16000);
+        let error_slot = Arc::clone(self.device_error(source));
+        *error_slot.lock().unwrap() = None;
+        let err_fn = move |err: cpal::StreamError| {
+            eprintln!("An error occurred on cpal stream: {}", err);
+            if let Ok(mut slot) = error_slot.lock() {
+                *slot = Some(err.to_string());
+            }
+        };
         
         let mut on_data = move |raw_data: &[f32]| {
             let mono_samples = if channels > 1 {
@@ -123,7 +142,7 @@ impl CaptureEngine {
                 raw_data.to_vec()
             };
 
-            let resampled = resampler.process(&mono_samples, sample_rate, 16000);
+            let resampled = resampler.process(&mono_samples);
             buffer.push_slice(&resampled);
             frame_handler(&resampled, source);
         };

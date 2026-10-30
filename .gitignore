@@ -11,6 +11,9 @@ dist-ssr/
 .env.*
 !.env.example
 
+# Object storage (local provider)
+Admin-Backend/storage/
+
 # Rust/Tauri build artifacts
 ks-vision-backend/src-tauri/target/
 ks-vision-backend/src-tauri/gen/

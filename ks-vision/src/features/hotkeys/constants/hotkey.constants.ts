@@ -1,5 +1,5 @@
+// Global keys are owned by the Rust registry (ks-vision-backend modules/shortcuts).
 export const HOTKEYS = {
-  TOGGLE_WIDGET: 'CommandOrControl+Shift+H',
   LOCAL_ESCAPE: 'Escape',
 };
 

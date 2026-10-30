@@ -10,8 +10,8 @@ import '../styles/widget.css';
 export const FloatingWidget: React.FC = () => {
   const { opacity, isHovered, bind } = useWidgetOpacity();
   
-  // Start auto-hide listener (activates 30s countdown on inactive states)
-  useAutoHide(isHovered, true);
+  // Auto-hide only when widget.autoHideDuration > 0 (min 60s, never while busy)
+  useAutoHide(isHovered);
 
   return (
     <WidgetContainer opacity={opacity} {...bind}>

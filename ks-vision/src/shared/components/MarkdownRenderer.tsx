@@ -31,7 +31,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
   const parts = cleanContent.split(/(```[\s\S]*?```)/g);
 
   return (
-    <div className="space-y-2.5 text-xs text-slate-200 leading-relaxed select-text font-sans">
+    <div className="space-y-2.5 select-text font-sans text-[length:var(--ks-answer-size,13px)] leading-[1.65] text-[var(--lg-text)]">
       {parts.map((part, index) => {
         if (part.startsWith('```') && part.endsWith('```')) {
           // Code block rendering
@@ -86,7 +86,7 @@ const CodeBlock: React.FC<{ code: string; language: string }> = ({ code, languag
       </div>
 
       {/* Code Body */}
-      <pre className="p-3 overflow-x-auto text-[11px] font-mono text-slate-200 leading-relaxed bg-slate-950/90 selection:bg-cyan-900/50">
+      <pre className="p-3 overflow-x-auto text-[0.85em] font-mono text-slate-200 leading-relaxed bg-slate-950/90 selection:bg-cyan-900/50">
         <code>{code}</code>
       </pre>
     </div>
@@ -105,21 +105,21 @@ const TextBlock: React.FC<{ text: string }> = ({ text }) => {
         // Headers
         if (line.startsWith('# ')) {
           return (
-            <h1 key={idx} className="text-sm font-bold text-cyan-300 border-b border-slate-800 pb-1 mt-2 mb-1">
+            <h1 key={idx} className="mb-1 mt-2 border-b border-white/10 pb-1 text-[1.15em] font-semibold text-white">
               {formatInline(line.slice(2))}
             </h1>
           );
         }
         if (line.startsWith('## ')) {
           return (
-            <h2 key={idx} className="text-xs font-bold text-purple-300 mt-2 mb-1">
+            <h2 key={idx} className="mb-1 mt-2 text-[1.08em] font-semibold text-white">
               {formatInline(line.slice(3))}
             </h2>
           );
         }
         if (line.startsWith('### ')) {
           return (
-            <h3 key={idx} className="text-xs font-semibold text-cyan-400 mt-1.5 mb-0.5">
+            <h3 key={idx} className="mb-0.5 mt-1.5 text-[1em] font-semibold text-white/90">
               {formatInline(line.slice(4))}
             </h3>
           );
@@ -128,8 +128,8 @@ const TextBlock: React.FC<{ text: string }> = ({ text }) => {
         // Bullet lists (* or -)
         if (trimmed.startsWith('* ') || trimmed.startsWith('- ')) {
           return (
-            <div key={idx} className="flex gap-2 items-start pl-2 text-slate-300">
-              <span className="text-cyan-400 font-bold text-[10px] mt-0.5">•</span>
+            <div key={idx} className="flex items-start gap-2 pl-2 text-[var(--lg-text)]">
+              <span className="mt-0.5 text-[0.77em] font-bold text-white/70">•</span>
               <span className="flex-1">{formatInline(trimmed.slice(2))}</span>
             </div>
           );
@@ -139,8 +139,8 @@ const TextBlock: React.FC<{ text: string }> = ({ text }) => {
         const matchNum = trimmed.match(/^(\d+\.)\s+(.*)/);
         if (matchNum) {
           return (
-            <div key={idx} className="flex gap-2 items-start pl-2 text-slate-300">
-              <span className="font-mono text-purple-400 font-semibold text-[11px]">{matchNum[1]}</span>
+            <div key={idx} className="flex items-start gap-2 pl-2 text-[var(--lg-text)]">
+              <span className="font-mono text-[0.85em] font-semibold text-white/70">{matchNum[1]}</span>
               <span className="flex-1">{formatInline(matchNum[2])}</span>
             </div>
           );
@@ -148,7 +148,7 @@ const TextBlock: React.FC<{ text: string }> = ({ text }) => {
 
         // Standard paragraph
         return (
-          <p key={idx} className="text-slate-200 leading-relaxed">
+          <p key={idx} className="leading-[1.65] text-[var(--lg-text)]">
             {formatInline(line)}
           </p>
         );
@@ -166,7 +166,7 @@ function formatInline(str: string): React.ReactNode[] {
   return tokens.map((token, index) => {
     if (token.startsWith('**') && token.endsWith('**')) {
       return (
-        <strong key={index} className="font-bold text-slate-100">
+        <strong key={index} className="font-semibold text-white">
           {token.slice(2, -2)}
         </strong>
       );
@@ -175,7 +175,7 @@ function formatInline(str: string): React.ReactNode[] {
       return (
         <code
           key={index}
-          className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 font-mono text-[10.5px] text-cyan-300"
+          className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 font-mono text-[0.82em] text-cyan-300"
         >
           {token.slice(1, -1)}
         </code>
@@ -183,7 +183,7 @@ function formatInline(str: string): React.ReactNode[] {
     }
     if (token.startsWith('*') && token.endsWith('*')) {
       return (
-        <em key={index} className="italic text-slate-300">
+        <em key={index} className="italic text-white/90">
           {token.slice(1, -1)}
         </em>
       );

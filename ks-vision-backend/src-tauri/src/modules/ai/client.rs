@@ -1,3 +1,4 @@
+use crate::modules::transcription::gemini_voice;
 use std::collections::HashSet;
 
 use reqwest::Client;
@@ -15,6 +16,8 @@ struct GeminiPayload {
     contents: Vec<GeminiContentPayload>,
     #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
     system_instruction: Option<GeminiSystemInstructionPayload>,
+    #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
+    generation_config: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -180,6 +183,7 @@ impl GeminiClient {
                 }],
             }],
             system_instruction,
+            generation_config: None,
         };
 
         let manager = GeminiModelManager::global();
@@ -320,13 +324,14 @@ impl GeminiClient {
             parts: vec![GeminiPartPayload { text: sys }],
         });
 
-        let payload = GeminiPayload {
+        let mut payload = GeminiPayload {
             contents: vec![GeminiContentPayload {
                 parts: vec![GeminiPartPayload {
                     text: prompt.to_string(),
                 }],
             }],
             system_instruction,
+            generation_config: None,
         };
 
         let manager = GeminiModelManager::global();
@@ -334,7 +339,7 @@ impl GeminiClient {
         let mut tried: HashSet<String> = HashSet::new();
         let mut last_err = String::from("No Gemini model available");
         let mut logged_selection = false;
-        let mut selected_model;
+        let selected_model;
         let mut stream_started;
 
         let response = loop {
@@ -355,9 +360,13 @@ impl GeminiClient {
             }
 
             let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}",
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
                 active_model, api_key
             );
+            // Minimal thinking: default thinking delays the first words by seconds.
+            let variant = gemini_voice::thinking_variant(&active_model);
+            payload.generation_config = gemini_voice::thinking_config(variant)
+                .map(|t| serde_json::json!({ "thinkingConfig": t }));
 
             stream_started = std::time::Instant::now();
             let response_res = self.client.post(&url).json(&payload).send().await;
@@ -384,6 +393,15 @@ impl GeminiClient {
             let status_code = resp.status();
             if !status_code.is_success() {
                 let err_text = resp.text().await.unwrap_or_default();
+                if status_code == reqwest::StatusCode::BAD_REQUEST
+                    && variant < 2
+                    && err_text.to_lowercase().contains("thinking")
+                {
+                    // This model wants another thinking setting: retry it with the next form.
+                    gemini_voice::set_thinking_variant(&active_model, variant + 1);
+                    tried.remove(&active_model);
+                    continue;
+                }
                 last_err = format!(
                     "Gemini stream status {} on {}: {}",
                     status_code, active_model, err_text
@@ -420,6 +438,7 @@ impl GeminiClient {
         );
 
         let mut stream = response.bytes_stream();
+        let mut sse = gemini_voice::SseTextParser::default();
 
         while let Some(chunk_res) = stream.next().await {
             if cancellation_token.is_cancelled() {
@@ -430,65 +449,15 @@ impl GeminiClient {
                 message: format!("Error reading stream chunk: {}", e),
             })?;
 
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            let mut clean_chunk = chunk_str.trim();
-
-            if clean_chunk.starts_with('[') {
-                clean_chunk = clean_chunk[1..].trim();
+            // Forward each piece as soon as it arrives so the UI renders progressively.
+            let text = sse.push(&chunk);
+            if !text.is_empty() {
+                let _ = channel.send(text);
             }
-            if clean_chunk.ends_with(']') {
-                clean_chunk = clean_chunk[..clean_chunk.len() - 1].trim();
-            }
-            if clean_chunk.starts_with(',') {
-                clean_chunk = clean_chunk[1..].trim();
-            }
-            if clean_chunk.ends_with(',') {
-                clean_chunk = clean_chunk[..clean_chunk.len() - 1].trim();
-            }
-
-            if !clean_chunk.is_empty() && clean_chunk != "[" && clean_chunk != "]" {
-                if let Ok(gemini_resp) = serde_json::from_str::<GeminiResponse>(clean_chunk) {
-                    if let Some(candidates) = gemini_resp.candidates {
-                        if let Some(first) = candidates.first() {
-                            if let Some(content) = &first.content {
-                                if let Some(parts) = &content.parts {
-                                    if let Some(part) = parts.first() {
-                                        if let Some(text) = &part.text {
-                                            if !text.is_empty() {
-                                                let _ = channel.send(text.clone());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    let mut search_str = clean_chunk;
-                    while let Some(pos) = search_str.find("\"text\":") {
-                        let start = pos + 7;
-                        if let Some(sub) = search_str.get(start..) {
-                            let sub = sub.trim();
-                            if sub.starts_with('"') {
-                                if let Some(end) = sub[1..].find('"') {
-                                    let text_val = &sub[1..end + 1];
-                                    if !text_val.is_empty() {
-                                        let clean_text = text_val
-                                            .replace("\\n", "\n")
-                                            .replace("\\\"", "\"")
-                                            .replace("\\t", "\t")
-                                            .replace("\\\\", "\\");
-                                        let _ = channel.send(clean_text);
-                                    }
-                                    search_str = &sub[end + 2..];
-                                    continue;
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
+        }
+        let rest = sse.finish();
+        if !rest.is_empty() {
+            let _ = channel.send(rest);
         }
 
         Ok(())

@@ -6,7 +6,7 @@ interface WidgetOpacityProps {
 
 export const WidgetOpacity: React.FC<WidgetOpacityProps> = ({ opacity }) => {
   return (
-    <div className="absolute bottom-1.5 right-2 text-[9px] font-medium text-slate-500/70 select-none pointer-events-none z-0">
+    <div className="pointer-events-none absolute bottom-2 right-4 z-10 select-none text-[9px] font-medium text-[var(--lg-text-muted)]">
       {Math.round(opacity * 100)}%
     </div>
   );

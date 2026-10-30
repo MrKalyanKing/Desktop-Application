@@ -1,1 +1,2 @@
-export * from './useGlobalHotkeys';
+export * from './useShortcutActions';
+export * from './useShortcutFeedback';

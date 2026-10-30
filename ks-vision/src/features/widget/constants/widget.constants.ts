@@ -4,4 +4,5 @@ export const WIDGET_HEIGHT = 150;
 export const OPACITY_DEFAULT = 0.80;
 export const OPACITY_HOVERED = 1.0;
 
-export const AUTO_HIDE_DELAY = 30000; // 30 seconds
+// Auto-hide never fires sooner than this, whatever widget.autoHideDuration says.
+export const AUTO_HIDE_MIN_MS = 60000;

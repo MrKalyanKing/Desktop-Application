@@ -8,12 +8,12 @@ export const CapturePreview: React.FC = () => {
   if (!preview) return null;
 
   return (
-    <div className="flex gap-2 bg-white/4 p-2 rounded-xl border border-white/8 select-none mb-2">
-      <div className="relative w-14 h-14 bg-black/40 border border-white/10 rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center">
+    <div className="lg-card mb-2 flex gap-2 p-2 select-none">
+      <div className="relative flex h-14 w-14 flex-shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[var(--lg-rim)] bg-black/30">
         <img src={preview} alt="Capture" className="max-w-full max-h-full object-contain" />
       </div>
       <div className="flex-1 flex items-center gap-1.5 text-[11px] text-slate-300 font-medium">
-        <Image24Regular className="text-cyan-300" style={{ fontSize: 16 }} />
+        <Image24Regular className="text-[var(--lg-accent)]" style={{ fontSize: 16 }} />
         Screen captured
       </div>
     </div>

@@ -35,7 +35,17 @@ extern "system" {
     fn IsWindowVisible(hwnd: isize) -> i32;
     fn GetWindow(hwnd: isize, cmd: u32) -> isize;
     fn GetAncestor(hwnd: isize, flags: u32) -> isize;
+    fn IsWindow(hwnd: isize) -> i32;
+    fn IsIconic(hwnd: isize) -> i32;
 }
+
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmGetWindowAttribute(hwnd: isize, attr: u32, value: *mut core::ffi::c_void, size: u32) -> i32;
+}
+
+const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+const DWMWA_CLOAKED: u32 = 14;
 
 #[link(name = "gdi32")]
 extern "system" {
@@ -187,4 +197,53 @@ pub fn capture_region_gdi(x: i32, y: i32, w: u32, h: u32) -> Result<RgbaImage, S
         return Err("Region is empty".into());
     }
     capture_screen_rect(x, y, w as i32, h as i32)
+}
+
+/// Visible frame of `hwnd` (title bar + 1px border; no drop shadow or invisible resize
+/// borders), in physical screen pixels. Falls back to GetWindowRect only if DWM fails.
+pub fn window_frame_bounds(hwnd: isize) -> Result<super::capture::RECT, String> {
+    unsafe {
+        if hwnd == 0 || IsWindow(hwnd) == 0 {
+            return Err("Target window no longer exists".into());
+        }
+        if IsIconic(hwnd) != 0 {
+            return Err("Target window is minimized".into());
+        }
+        if IsWindowVisible(hwnd) == 0 {
+            return Err("Target window is not visible".into());
+        }
+        let mut cloaked: u32 = 0;
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut core::ffi::c_void,
+            4,
+        ) == 0
+            && cloaked != 0
+        {
+            return Err("Target window is hidden (cloaked)".into());
+        }
+        let mut rect = super::capture::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let dwm_ok = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rect as *mut super::capture::RECT as *mut core::ffi::c_void,
+            std::mem::size_of::<super::capture::RECT>() as u32,
+        ) == 0;
+        if !dwm_ok && GetWindowRect(hwnd, &mut rect) == 0 {
+            return Err("Could not read target window bounds".into());
+        }
+        if rect.right - rect.left < 8 || rect.bottom - rect.top < 8 {
+            return Err("Target window is too small to capture".into());
+        }
+        Ok(rect)
+    }
+}
+
+/// Capture exactly the target window's visible frame. Screen-based BitBlt: windows
+/// covering the target appear in the image (KS Vision itself is capture-excluded).
+/// Never falls back to a full-screen capture.
+pub fn capture_window(hwnd: isize) -> Result<RgbaImage, String> {
+    let r = window_frame_bounds(hwnd)?;
+    capture_screen_rect(r.left, r.top, r.right - r.left, r.bottom - r.top)
 }

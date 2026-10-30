@@ -1,15 +1,47 @@
 :root {
-  --bg-widget: linear-gradient(165deg, rgba(18, 22, 40, 0.92) 0%, rgba(10, 14, 28, 0.88) 100%);
-  --bg-widget-hover: linear-gradient(165deg, rgba(22, 28, 48, 0.95) 0%, rgba(12, 16, 32, 0.92) 100%);
-  --border-widget: rgba(125, 211, 252, 0.18);
-  --border-widget-hover: rgba(165, 180, 252, 0.35);
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  
-  --accent-cyan: #22d3ee;
-  --accent-purple: #a78bfa;
-  --accent-gradient: linear-gradient(135deg, #22d3ee 0%, #818cf8 50%, #c084fc 100%);
-  
-  --shadow-premium: 0 24px 48px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255,255,255,0.04) inset;
+  color-scheme: dark;
+
+  --lg-font: "Inter", "SF Pro Display", "SF Pro Text", system-ui, -apple-system, sans-serif;
+  --lg-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --lg-fill-0: #08211d;
+  --lg-fill-1: #061714;
+  --lg-row: transparent;
+  --lg-rim: rgba(220, 245, 236, 0.38);
+
+  --lg-text: rgba(255, 255, 255, 0.96);
+  --lg-text-secondary: rgba(236, 248, 244, 0.82);
+  --lg-text-muted: rgba(210, 232, 224, 0.55);
+  --lg-title: #ffffff;
+
+  --lg-accent: #ffffff;
+  --lg-accent-deep: #d4d4d8;
+  --lg-accent-grad: none;
+  --lg-accent-glow: transparent;
+
+  --lg-success: #5ee9a3;
+  --lg-danger: #fb7185;
+
+  --lg-radius-panel: 32px;
+  --lg-radius-row: 18px;
+  --lg-radius-pill: 999px;
+
+  --lg-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --lg-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --lg-row-shadow: none;
+
+  --glass-fill: transparent;
+  --glass-rim: none;
+
+  --bg-widget: linear-gradient(165deg, var(--lg-fill-0), var(--lg-fill-1));
+  --bg-widget-hover: var(--bg-widget);
+  --border-widget: var(--lg-rim);
+  --border-widget-hover: rgba(255, 255, 255, 0.4);
+  --text-primary: var(--lg-text);
+  --text-secondary: var(--lg-text-secondary);
+  --text-muted: var(--lg-text-muted);
+  --accent-cyan: #ffffff;
+  --accent-purple: #d4d4d8;
+  --accent-gradient: var(--lg-accent-grad);
+  --shadow-premium: var(--lg-shadow);
 }

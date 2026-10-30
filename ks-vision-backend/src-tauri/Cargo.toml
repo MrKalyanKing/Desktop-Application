@@ -35,8 +35,14 @@ base64 = "0.22"
 rusqlite = { version = "0.31", features = ["bundled"] }
 cpal = "0.15"
 nnnoiseless = { version = "0.5", default-features = false }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
 
+
+# RNNoise runs on every audio callback; unoptimized it costs ~0.5 CPU core in `tauri dev`.
+[profile.dev.package.nnnoiseless]
+opt-level = 3

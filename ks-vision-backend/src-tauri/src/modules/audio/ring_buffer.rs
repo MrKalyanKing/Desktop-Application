@@ -13,6 +13,7 @@ pub const COMPLETE_SILENCE_SAMPLES: usize = 4_800;
 
 pub struct AudioUtteranceBuffer {
     buffer: VecDeque<f32>,
+    #[allow(dead_code)]
     sample_rate: u32,
 }
 
